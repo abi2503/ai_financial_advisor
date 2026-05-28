@@ -1,0 +1,21 @@
+# Terraform state (contains secrets)
+*.tfstate
+*.tfstate.backup
+.terraform/
+terraform.tfvars
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.env
+
+# Node
+node_modules/
+.next/
+
+# Docker
+*.tar
+
+# AWS
+.aws-sam/
