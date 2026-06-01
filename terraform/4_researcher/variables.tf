@@ -21,3 +21,7 @@ variable "alex_api_endpoint" {
   type        = string
 }
 
+variable "alex_api_key" {
+  description = "API key for ALEX researcher"
+  type= string
+}
