@@ -67,7 +67,7 @@ def list_all_vectors():
         
         for i, vector in enumerate(vectors, 1):
             metadata = vector.get('metadata', {})
-            text_preview = metadata.get('text', '')[:100] + '...' if len(metadata.get('text', '')) > 100 else metadata.get('text', '')
+            text_preview = metadata.get('content', metadata.get('text', ''))[:100]
             
             print(f"{i}. Vector ID: {vector['key']}")
             if metadata.get('ticker'):
@@ -111,7 +111,8 @@ def search_vectors(query_text, k=5):
             print(f"Score: {1 - distance:.3f}")  # Convert distance to similarity score
             if metadata.get('company_name'):
                 print(f"Company: {metadata['company_name']} ({metadata.get('ticker', 'N/A')})")
-            print(f"Text: {metadata.get('text', '')[:200]}...")
+            text = metadata.get('content', metadata.get('text', ''))
+            print(f"Text: {text[:200]}...")
             print()
             
     except Exception as e:
