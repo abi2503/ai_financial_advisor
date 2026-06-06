@@ -1,8 +1,6 @@
 data "aws_caller_identity" "current" {}
 
-# In Guide 4 and Guide 5 main.tf
-# Replace all VPC resource definitions with these data sources:
-
+# Reference shared VPC from 0_vpc
 data "aws_vpc" "main" {
   tags = { Name = "alex-vpc" }
 }
@@ -15,19 +13,14 @@ data "aws_subnet" "public_2" {
   tags = { Name = "alex-public-2" }
 }
 
-data "aws_subnet" "private_1" {
-  tags = { Name = "alex-private-1" }
-}
-
-data "aws_subnet" "private_2" {
-  tags = { Name = "alex-private-2" }
-}
-
+# ============================================
+# Security Groups
+# ============================================
 
 resource "aws_security_group" "alb" {
   name        = "${var.project_name}-alb-sg"
   description = "Security group for ALB"
-  vpc_id      = aws_vpc.main.id
+  vpc_id      = data.aws_vpc.main.id
 
   ingress {
     from_port   = 80
@@ -51,7 +44,7 @@ resource "aws_security_group" "alb" {
 resource "aws_security_group" "ecs" {
   name        = "${var.project_name}-ecs-sg"
   description = "Security group for ECS tasks"
-  vpc_id      = aws_vpc.main.id
+  vpc_id      = data.aws_vpc.main.id
 
   ingress {
     from_port       = 8000
@@ -72,6 +65,10 @@ resource "aws_security_group" "ecs" {
   }
 }
 
+# ============================================
+# ECR Repository
+# ============================================
+
 resource "aws_ecr_repository" "researcher" {
   name                 = "${var.project_name}-researcher"
   image_tag_mutability = "MUTABLE"
@@ -86,7 +83,10 @@ resource "aws_ecr_repository" "researcher" {
   }
 }
 
-# Execution role — used by ECS to pull image and write logs
+# ============================================
+# IAM Roles
+# ============================================
+
 resource "aws_iam_role" "ecs_execution_role" {
   name = "${var.project_name}-ecs-execution-role"
 
@@ -109,7 +109,6 @@ resource "aws_iam_role_policy_attachment" "ecs_execution_role_policy" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
 }
 
-# Task role — used by your running container to call AWS services
 resource "aws_iam_role" "ecs_task_role" {
   name = "${var.project_name}-ecs-task-role"
 
@@ -147,12 +146,20 @@ resource "aws_iam_role_policy" "ecs_task_bedrock_policy" {
   })
 }
 
+# ============================================
+# CloudWatch
+# ============================================
+
 resource "aws_cloudwatch_log_group" "researcher" {
   name              = "/ecs/${var.project_name}-researcher"
   retention_in_days = 7
 
   tags = { Project = var.project_name }
 }
+
+# ============================================
+# ECS Cluster + Task Definition
+# ============================================
 
 resource "aws_ecs_cluster" "main" {
   name = "${var.project_name}-cluster"
@@ -207,12 +214,16 @@ resource "aws_ecs_task_definition" "researcher" {
   tags = { Project = var.project_name }
 }
 
+# ============================================
+# ALB + Target Group + Listener
+# ============================================
+
 resource "aws_lb" "main" {
   name               = "${var.project_name}-alb"
   internal           = false
   load_balancer_type = "application"
   security_groups    = [aws_security_group.alb.id]
-  subnets            = [aws_subnet.public_1.id, aws_subnet.public_2.id]
+  subnets            = [data.aws_subnet.public_1.id, data.aws_subnet.public_2.id]
 
   tags = { Project = var.project_name }
 }
@@ -221,7 +232,7 @@ resource "aws_lb_target_group" "researcher" {
   name        = "${var.project_name}-tg"
   port        = 8000
   protocol    = "HTTP"
-  vpc_id      = aws_vpc.main.id
+  vpc_id      = data.aws_vpc.main.id
   target_type = "ip"
 
   health_check {
@@ -248,6 +259,10 @@ resource "aws_lb_listener" "http" {
   }
 }
 
+# ============================================
+# ECS Service
+# ============================================
+
 resource "aws_ecs_service" "researcher" {
   name            = "${var.project_name}-researcher"
   cluster         = aws_ecs_cluster.main.id
@@ -256,7 +271,7 @@ resource "aws_ecs_service" "researcher" {
   launch_type     = "FARGATE"
 
   network_configuration {
-    subnets          = [aws_subnet.public_1.id, aws_subnet.public_2.id]
+    subnets          = [data.aws_subnet.public_1.id, data.aws_subnet.public_2.id]
     security_groups  = [aws_security_group.ecs.id]
     assign_public_ip = true
   }
