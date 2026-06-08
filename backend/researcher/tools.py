@@ -95,6 +95,8 @@ NOTE: This data is from Yahoo Finance API.
         return f"Error fetching data for {ticker}: {str(e)}"
 
 
+
+
 @function_tool
 def get_current_date() -> str:
     """
@@ -108,6 +110,128 @@ def get_current_date() -> str:
     now = datetime.now(UTC)
     return f"Current date and time: {now.strftime('%B %d, %Y at %H:%M UTC')}"
 
+
+@function_tool
+async def get_news(ticker: str) -> str:
+    """
+    Get recent news headlines for a stock ticker.
+    Uses Yahoo Finance RSS feed.
+    Call this after get_stock_data.
+
+    Args:
+        ticker: Stock ticker symbol like NVDA or AAPL
+
+    Returns:
+        Recent news headlines as text
+    """
+    try:
+        import xml.etree.ElementTree as ET
+        import yfinance as yf
+
+        ticker = ticker.upper().strip()
+
+        # Get company name dynamically from yfinance
+        # No hardcoding — works for any ticker
+        try:
+            stock        = yf.Ticker(ticker)
+            info         = stock.info
+            company_name = info.get('longName', '')
+            short_name   = info.get('shortName', '')
+
+            # Build keywords from real company data
+            keywords = [ticker.lower()]
+
+            # Add company name words (filter short words)
+            for name in [company_name, short_name]:
+                if name:
+                    words = [
+                        w.lower() for w in name.split()
+                        if len(w) > 3  # skip "Inc", "Ltd", "Corp" etc
+                        and w.lower() not in
+                        ['inc.', 'inc', 'corp', 'corp.',
+                         'ltd', 'ltd.', 'the', 'and']
+                    ]
+                    keywords.extend(words)
+
+            # Remove duplicates
+            keywords = list(set(keywords))
+
+        except Exception:
+            # If yfinance fails just use ticker
+            keywords = [ticker.lower()]
+
+        url = (
+            f"https://feeds.finance.yahoo.com/rss/2.0/headline"
+            f"?s={ticker}&region=US&lang=en-US"
+        )
+
+        async with httpx.AsyncClient(timeout=15) as client:
+            response = await client.get(
+                url,
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+                }
+            )
+
+        if response.status_code != 200:
+            return f"News unavailable for {ticker}"
+
+        root    = ET.fromstring(response.text)
+        channel = root.find('channel')
+        items   = channel.findall('item') if channel else []
+
+        if not items:
+            return f"No recent news found for {ticker}"
+
+        # Filter articles to company-relevant only
+        relevant = []
+        fallback  = []
+
+        for item in items[:20]:
+            title       = item.findtext('title', '')
+            description = item.findtext('description', '')
+            combined    = (title + ' ' + description).lower()
+
+            pubdate = item.findtext('pubDate', '')
+            if pubdate:
+                try:
+                    from email.utils import parsedate_to_datetime
+                    dt      = parsedate_to_datetime(pubdate)
+                    pubdate = dt.strftime('%b %d %Y')
+                except Exception:
+                    pubdate = pubdate[:16]
+
+            entry = f"- [{pubdate}] {title}"
+            fallback.append(entry)
+
+            # Check relevance dynamically
+            if any(kw in combined for kw in keywords):
+                relevant.append(entry)
+
+        # Use relevant if we found enough, else fallback
+        if len(relevant) >= 2:
+            headlines   = relevant[:5]
+            source_note = f"Yahoo Finance RSS (filtered for {ticker})"
+        else:
+            headlines   = fallback[:5]
+            source_note = f"Yahoo Finance RSS (broader results)"
+
+        lines = [f"Latest news for {ticker} (Source: {source_note}):"]
+        lines.extend(headlines)
+
+        logger.info(
+            f"News for {ticker}: {len(relevant)} relevant "
+            f"of {len(fallback)} total"
+        )
+
+        return "\n".join(lines)
+
+    except ET.ParseError as e:
+        logger.error(f"RSS parse error for {ticker}: {e}")
+        return f"Could not parse news for {ticker}"
+    except Exception as e:
+        logger.error(f"News error for {ticker}: {type(e).__name__}: {e}")
+        return f"Could not fetch news for {ticker}: {str(e)}"
 
 @function_tool
 async def ingest_financial_document(content: str, topic: str) -> str:

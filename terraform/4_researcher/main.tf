@@ -141,11 +141,22 @@ resource "aws_iam_role_policy" "ecs_task_bedrock_policy" {
           "bedrock:ListFoundationModels"
         ]
         Resource = "*"
+      },
+      {
+        # CloudWatch — emit custom metrics
+        # Why: ECS container needs permission to
+        #      call PutMetricData API
+        Effect = "Allow"
+        Action = [
+          "cloudwatch:PutMetricData",
+          "cloudwatch:GetMetricData",
+          "cloudwatch:ListMetrics"
+        ]
+        Resource = "*"
       }
     ]
   })
 }
-
 # ============================================
 # CloudWatch
 # ============================================
@@ -156,6 +167,8 @@ resource "aws_cloudwatch_log_group" "researcher" {
 
   tags = { Project = var.project_name }
 }
+
+
 
 # ============================================
 # ECS Cluster + Task Definition
@@ -224,6 +237,7 @@ resource "aws_lb" "main" {
   load_balancer_type = "application"
   security_groups    = [aws_security_group.alb.id]
   subnets            = [data.aws_subnet.public_1.id, data.aws_subnet.public_2.id]
+  idle_timeout       = 300  
 
   tags = { Project = var.project_name }
 }
@@ -286,3 +300,4 @@ resource "aws_ecs_service" "researcher" {
 
   tags = { Project = var.project_name }
 }
+

@@ -83,14 +83,33 @@ async function saveResearchSession(
   result: string
 ) {
   const { RDSDataClient, ExecuteStatementCommand } = await import('@aws-sdk/client-rds-data')
+  const client = new RDSDataClient({ region: process.env.AWS_REGION || 'us-east-1' })
 
-  const client = new RDSDataClient({ region: process.env.AWS_REGION || 'ueast-1' })
-
-  // First get or create user
-  const userResult = await client.send(new ExecuteStatementCommand({
-    resourceArn: process.env.DB_CLUSTER_ARN,
-    secretArn:   process.env.DB_SECRET_ARN,
+  const DB = {
+    resourceArn: process.env.DB_CLUSTER_ARN!,
+    secretArn:   process.env.DB_SECRET_ARN!,
     database:    process.env.DB_NAME || 'alex_db',
+  }
+
+  // Retry logic for Aurora cold start
+  async function executeWithRetry(command: any, retries = 3) {
+    for (let i = 0; i < retries; i++) {
+      try {
+        return await client.send(command)
+      } catch (err: any) {
+        if (err.name === 'DatabaseResumingException' && i < retries - 1) {
+          console.log(`Aurora resuming — waiting 30s (attempt ${i + 1}/${retries})`)
+          await new Promise(r => setTimeout(r, 30000))
+        } else {
+          throw err
+        }
+      }
+    }
+  }
+
+  // Get or create user
+  const userResult = await executeWithRetry(new ExecuteStatementCommand({
+    ...DB,
     sql: `
       INSERT INTO users (clerk_id, email, name)
       VALUES (:clerk_id, :email, :name)
@@ -104,14 +123,12 @@ async function saveResearchSession(
     ]
   }))
 
-  const dbUserId = userResult.records?.[0]?.[0]?.stringValue
+  const dbUserId = (userResult as any).records?.[0]?.[0]?.stringValue
   if (!dbUserId) return
 
-  // Save research session
-  await client.send(new ExecuteStatementCommand({
-    resourceArn: process.env.DB_CLUSTER_ARN,
-    secretArn:   process.env.DB_SECRET_ARN,
-    database:    process.env.DB_NAME || 'alex_db',
+  // Save session
+  await executeWithRetry(new ExecuteStatementCommand({
+    ...DB,
     sql: `
       INSERT INTO research_sessions (user_id, topic, result)
       VALUES (:user_id::uuid, :topic, :result)
@@ -123,5 +140,5 @@ async function saveResearchSession(
     ]
   }))
 
-  console.log(`Saved research session for user ${dbUserId}`)
+  console.log(`Saved session for ${dbUserId}`)
 }

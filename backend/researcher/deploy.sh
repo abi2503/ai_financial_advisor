@@ -12,16 +12,17 @@ aws ecr get-login-password --region $REGION | \
   docker login --username AWS --password-stdin \
   "${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com"
 
-echo "🔨 Building Docker image..."
-DOCKER_BUILDKIT=1 docker build \
+echo "🔨 Building Docker image (linux/amd64 for ECS)..."
+docker buildx build \
   --platform linux/amd64 \
   --provenance=false \
   --sbom=false \
-  -t alex-researcher:latest \
+  -t alex-researcher:amd64 \
+  --load \
   .
 
 echo "🏷️  Tagging image..."
-docker tag alex-researcher:latest "${ECR_URL}:latest"
+docker tag alex-researcher:amd64 "${ECR_URL}:latest"
 
 echo "📤 Pushing to ECR..."
 MAX_ATTEMPTS=5
@@ -38,29 +39,63 @@ if [ $ATTEMPT -eq $MAX_ATTEMPTS ]; then
     exit 1
 fi
 
-echo "✅ Image pushed successfully!"
+echo "✅ Image pushed!"
 
-# Step 1 — Scale to zero (kills current container)
+# Scale to zero — kills current container
+echo "⏳ Stopping current container..."
 aws ecs update-service \
   --cluster alex-cluster \
   --service alex-researcher \
   --desired-count 0 \
-  --region us-east-1 > /dev/null
+  --region $REGION > /dev/null
 
-echo "⏳ Waiting for container to stop..."
 sleep 15
 
-# Step 2 — Scale back up (forces fresh pull)
+# Scale back up — forces fresh pull of new image
+echo "🚀 Starting new container..."
 aws ecs update-service \
   --cluster alex-cluster \
   --service alex-researcher \
   --desired-count 1 \
   --force-new-deployment \
-  --region us-east-1 > /dev/null
+  --region $REGION > /dev/null
 
-# Check task started AFTER your last push
+sleep 10
+
+# Get ALB URL and update .env.local automatically
+ALB_URL=$(aws elbv2 describe-load-balancers \
+  --names alex-alb \
+  --region $REGION \
+  --query "LoadBalancers[0].DNSName" \
+  --output text)
+
+echo ""
+echo "✅ Deployed! ALB: http://${ALB_URL}"
+echo ""
+
+# Auto-update frontend .env.local
+if [ -f "../../frontend/.env.local" ]; then
+  sed -i '' \
+    "s|NEXT_PUBLIC_ECS_URL=.*|NEXT_PUBLIC_ECS_URL=http://${ALB_URL}|" \
+    ../../frontend/.env.local
+  sed -i '' \
+    "s|ECS_URL=.*|ECS_URL=http://${ALB_URL}|" \
+    ../../frontend/.env.local
+  echo "✅ Updated frontend/.env.local with new ALB URL"
+fi
+
+sleep 60
+
+# Test health
+echo "🏥 Testing health..."
+curl -s "http://${ALB_URL}/health" | python3 -m json.tool
+
+# Show deployment status
+echo ""
+echo "📊 Deployment status:"
 aws ecs describe-services \
   --cluster alex-cluster \
   --services alex-researcher \
-  --region us-east-1 \
-  --query "services[0].deployments"
+  --region $REGION \
+  --query "services[0].deployments" \
+  --output table
