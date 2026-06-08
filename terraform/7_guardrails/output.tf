@@ -5,3 +5,11 @@ output "dashboard_url" {
 output "sns_topic_arn" {
   value = aws_sns_topic.alex_alarms.arn
 }
+
+output "guardrail_id" {
+  value = aws_bedrock_guardrail.alex.guardrail_id
+}
+
+output "guardrail_version" {
+  value = aws_bedrock_guardrail_version.alex.version
+}

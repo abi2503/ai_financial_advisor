@@ -157,3 +157,88 @@ resource "aws_cloudwatch_dashboard" "alex" {
     ]
   })
 }
+
+# ============================================
+# Bedrock Guardrail
+# Why: Safety layer on every AI response
+#      Financial advice requires protection
+# ============================================
+
+resource "aws_bedrock_guardrail" "alex" {
+  name                      = "alex-financial-guardrail"
+  description               = "Safety guardrail for Alex AI financial research"
+  blocked_input_messaging   = "I can only help with financial research topics. Please ask about stocks, markets, or investment analysis."
+  blocked_outputs_messaging = "This response was filtered for safety. Please rephrase your question about financial research."
+
+  # Topic Policy
+  # Why: Block requests outside financial research scope
+  #      Prevents misuse of the platform
+  topic_policy_config {
+    topics_config {
+      name       = "harmful-financial-advice"
+      definition = "Specific investment advice guaranteeing returns or recommending putting all assets in one investment"
+      examples   = [
+        "Put all your savings in this stock",
+        "This investment guarantees 100% returns",
+        "You should mortgage your house to buy crypto"
+      ]
+      type = "DENY"
+    }
+
+    topics_config {
+      name       = "off-topic-requests"
+      definition = "Requests unrelated to financial research, stock analysis, or market information"
+      examples   = [
+        "Write me a poem",
+        "Help me with my homework",
+        "Tell me a joke"
+      ]
+      type = "DENY"
+    }
+  }
+
+  # Content Policy
+  # Why: Block harmful content categories
+  sensitive_information_policy_config {
+    pii_entities_config {
+      type   = "SSN"
+      action = "BLOCK"
+    }
+    pii_entities_config {
+      type   = "CREDIT_DEBIT_CARD_NUMBER"
+      action = "BLOCK"
+    }
+    pii_entities_config {
+      type   = "BANK_ACCOUNT_NUMBER"
+      action = "BLOCK"
+    }
+    pii_entities_config {
+      type   = "EMAIL"
+      action = "ANONYMIZE"
+    }
+    pii_entities_config {
+      type   = "PHONE"
+      action = "ANONYMIZE"
+    }
+  }
+
+  # Word Policy
+  # Why: Block specific harmful phrases
+  word_policy_config {
+    words_config { text = "guaranteed returns" }
+    words_config { text = "get rich quick" }
+    words_config { text = "risk free investment" }
+    words_config { text = "insider tip" }
+    words_config { text = "pump and dump" }
+  }
+
+  tags = { Project = "alex" }
+}
+
+# Guardrail Version
+# Why: Guardrails need a version to be usable
+#      Version 1 = first published version
+resource "aws_bedrock_guardrail_version" "alex" {
+  guardrail_id = aws_bedrock_guardrail.alex.guardrail_id
+  description  = "Version 1 — initial financial research guardrail"
+}
