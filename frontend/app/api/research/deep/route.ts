@@ -1,7 +1,6 @@
 import { auth } from '@clerk/nextjs/server'
 import { NextRequest, NextResponse } from 'next/server'
-
-const ECS_URL = process.env.ECS_URL || process.env.NEXT_PUBLIC_ECS_URL || ''
+import { getEcsUrl } from '@/lib/config'
 
 export async function POST(req: NextRequest) {
   try {
@@ -15,11 +14,19 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Missing topic' }, { status: 400 })
     }
 
+    // Get ECS URL from SSM
+    const ECS_URL = await getEcsUrl()
+    if (!ECS_URL) {
+      return NextResponse.json(
+        { error: 'Research service not available' },
+        { status: 503 }
+      )
+    }
+
     console.log(`Deep research from ${userId}: ${topic}`)
 
-    // Deep research can take 3-5 minutes
     const controller = new AbortController()
-    const timeout    = setTimeout(() => controller.abort(), 280000) // 4.5 min
+    const timeout    = setTimeout(() => controller.abort(), 280000)
 
     try {
       const ecsResponse = await fetch(`${ECS_URL}/research/deep`, {
@@ -32,10 +39,8 @@ export async function POST(req: NextRequest) {
       clearTimeout(timeout)
 
       if (!ecsResponse.ok) {
-        const text = await ecsResponse.text()
-        console.error(`ECS deep error: ${ecsResponse.status} ${text}`)
         return NextResponse.json(
-          { error: `Deep research service error: ${ecsResponse.status}` },
+          { error: `Deep research error: ${ecsResponse.status}` },
           { status: 500 }
         )
       }
@@ -43,14 +48,14 @@ export async function POST(req: NextRequest) {
       const data = await ecsResponse.json()
       return NextResponse.json({
         status: 'success',
-        result: data.result || data.detail || 'Deep research complete'
+        result: data.result || 'Deep research complete'
       })
 
     } catch (fetchErr: any) {
       clearTimeout(timeout)
       if (fetchErr.name === 'AbortError') {
         return NextResponse.json(
-          { error: 'Deep research timed out — SEC filings can take 5+ minutes. Try a more specific query.' },
+          { error: 'Deep research timed out — try a more specific query' },
           { status: 408 }
         )
       }
