@@ -43,9 +43,7 @@ export default async function LandingPage() {
           <span className="text-blue-400"> at $50/month</span>
         </h1>
         <p className="text-xl text-gray-400 mb-10 max-w-2xl mx-auto">
-          Alex autonomously researches financial markets, builds a searchable
-          knowledge base, and delivers personalized intelligence — without any
-          human intervention.
+        Alex researches financial markets, builds a searchable knowledge base, and delivers personalized intelligence automatically.
         </p>
         <div className="flex gap-4 justify-center">
           {userId ? (
