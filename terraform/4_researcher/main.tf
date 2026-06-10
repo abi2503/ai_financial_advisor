@@ -210,7 +210,9 @@ resource "aws_ecs_task_definition" "researcher" {
       environment = [
         { name = "OPENAI_API_KEY",    value = var.openai_api_key },
         { name = "ALEX_API_ENDPOINT", value = var.alex_api_endpoint },
-        { name = "ALEX_API_KEY",      value = var.alex_api_key }
+        { name = "ALEX_API_KEY",      value = var.alex_api_key },
+        { name = "BEDROCK_GUARDRAIL_ID",      value = "eea439luokx8" },
+        { name = "BEDROCK_GUARDRAIL_VERSION", value = "1" }
       ]
 
       logConfiguration = {

@@ -25,7 +25,7 @@ echo "🏷️  Tagging image..."
 docker tag alex-researcher:amd64 "${ECR_URL}:latest"
 
 echo "📤 Pushing to ECR..."
-MAX_ATTEMPTS=5
+MAX_ATTEMPTS=10
 ATTEMPT=1
 PUSH_SUCCESS=false
 
@@ -34,9 +34,9 @@ while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
         PUSH_SUCCESS=true
         break
     else
-        echo "Push failed — attempt $ATTEMPT of $MAX_ATTEMPTS. Retrying in 5s..."
+        echo "Push failed — attempt $ATTEMPT of $MAX_ATTEMPTS. Retrying in 15s..."
         ATTEMPT=$((ATTEMPT + 1))
-        sleep 5
+        sleep 15
     fi
 done
 

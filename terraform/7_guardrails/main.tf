@@ -1,8 +1,28 @@
+terraform {
+  required_version = ">= 1.5"
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+  }
+}
+
+provider "aws" {
+  region = "us-east-1"
+}
+
+# ============================================
+# SNS Topic for Alarms
+# ============================================
 resource "aws_sns_topic" "alex_alarms" {
   name = "alex-ai-alarms"
   tags = { Project = "alex" }
 }
 
+# ============================================
+# CloudWatch Alarms
+# ============================================
 resource "aws_cloudwatch_metric_alarm" "high_error_rate" {
   alarm_name          = "alex-high-error-rate"
   comparison_operator = "GreaterThanThreshold"
@@ -33,7 +53,9 @@ resource "aws_cloudwatch_metric_alarm" "high_latency" {
   tags                = { Project = "alex" }
 }
 
-
+# ============================================
+# CloudWatch Dashboard
+# ============================================
 resource "aws_cloudwatch_dashboard" "alex" {
   dashboard_name = "Alex-AI-Platform"
 
@@ -98,8 +120,8 @@ resource "aws_cloudwatch_dashboard" "alex" {
           yAxis = { left = { min = 0 } }
           annotations = {
             horizontal = [
-              { value = 60,  label = "Fast target",  color = "#ff9900" },
-              { value = 300, label = "Deep target",  color = "#ff0000" }
+              { value = 60,  label = "Fast target", color = "#ff9900" },
+              { value = 300, label = "Deep target", color = "#ff0000" }
             ]
           }
         }
@@ -160,19 +182,13 @@ resource "aws_cloudwatch_dashboard" "alex" {
 
 # ============================================
 # Bedrock Guardrail
-# Why: Safety layer on every AI response
-#      Financial advice requires protection
 # ============================================
-
 resource "aws_bedrock_guardrail" "alex" {
   name                      = "alex-financial-guardrail"
   description               = "Safety guardrail for Alex AI financial research"
   blocked_input_messaging   = "I can only help with financial research topics. Please ask about stocks, markets, or investment analysis."
   blocked_outputs_messaging = "This response was filtered for safety. Please rephrase your question about financial research."
 
-  # Topic Policy
-  # Why: Block requests outside financial research scope
-  #      Prevents misuse of the platform
   topic_policy_config {
     topics_config {
       name       = "harmful-financial-advice"
@@ -184,7 +200,6 @@ resource "aws_bedrock_guardrail" "alex" {
       ]
       type = "DENY"
     }
-
     topics_config {
       name       = "off-topic-requests"
       definition = "Requests unrelated to financial research, stock analysis, or market information"
@@ -197,11 +212,9 @@ resource "aws_bedrock_guardrail" "alex" {
     }
   }
 
-  # Content Policy
-  # Why: Block harmful content categories
   sensitive_information_policy_config {
     pii_entities_config {
-      type   = "SSN"
+      type   = "US_SOCIAL_SECURITY_NUMBER"
       action = "BLOCK"
     }
     pii_entities_config {
@@ -209,7 +222,7 @@ resource "aws_bedrock_guardrail" "alex" {
       action = "BLOCK"
     }
     pii_entities_config {
-      type   = "BANK_ACCOUNT_NUMBER"
+      type   = "US_BANK_ACCOUNT_NUMBER"
       action = "BLOCK"
     }
     pii_entities_config {
@@ -222,8 +235,6 @@ resource "aws_bedrock_guardrail" "alex" {
     }
   }
 
-  # Word Policy
-  # Why: Block specific harmful phrases
   word_policy_config {
     words_config { text = "guaranteed returns" }
     words_config { text = "get rich quick" }
@@ -236,9 +247,7 @@ resource "aws_bedrock_guardrail" "alex" {
 }
 
 # Guardrail Version
-# Why: Guardrails need a version to be usable
-#      Version 1 = first published version
 resource "aws_bedrock_guardrail_version" "alex" {
-  guardrail_id = aws_bedrock_guardrail.alex.guardrail_id
-  description  = "Version 1 — initial financial research guardrail"
+  guardrail_arn = aws_bedrock_guardrail.alex.guardrail_arn
+  description   = "Version 1 — initial financial research guardrail"
 }

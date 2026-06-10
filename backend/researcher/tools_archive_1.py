@@ -14,43 +14,25 @@ logger = logging.getLogger(__name__)
 @function_tool
 async def get_stock_data(ticker: str) -> str:
     """
-    Get real-time stock data AND recent news for a ticker.
-    Uses Yahoo Finance API for metrics and RSS for news.
-    Call this once per stock you are researching.
+    Get real-time stock data for a ticker symbol via Yahoo Finance API.
+    Use this for ALL financial metrics — prices, ratios, market cap.
+    This is MORE reliable than browser scraping for structured data.
+    ALWAYS call this before browser tools when researching a stock.
 
     Args:
-        ticker: Stock ticker symbol e.g. NVDA AAPL TSLA
+        ticker: Stock ticker symbol e.g. AVGO, IBM, NVDA, AAPL
 
     Returns:
-        Current stock metrics and recent news headlines
+        Current stock data as formatted string with source citation
     """
     try:
         import yfinance as yf
-        import xml.etree.ElementTree as ET
-        import time
 
-        ticker = ticker.upper().strip()
+        stock = yf.Ticker(ticker.upper().strip())
+        info  = stock.info
 
-        # Retry yfinance up to 3 times
-        # Why: Yahoo Finance rate limits ECS IPs
-        #      Retry with backoff fixes most cases
-        info = {}
-        for attempt in range(3):
-            try:
-                stock = yf.Ticker(ticker)
-                info  = stock.info
-                # Verify we got real data not empty
-                if info.get('currentPrice') or info.get('regularMarketPrice'):
-                    break
-                print(f"yfinance attempt {attempt+1} returned empty — retrying...")
-                time.sleep(2 * (attempt + 1))
-            except Exception as e:
-                print(f"yfinance attempt {attempt+1} failed: {e}")
-                if attempt < 2:
-                    time.sleep(2 * (attempt + 1))
-
-        # Extract metrics with safe fallbacks
-        price     = info.get('currentPrice') or info.get('regularMarketPrice') or info.get('previousClose', 'N/A')
+        # Extract key metrics safely
+        price     = info.get('currentPrice') or info.get('regularMarketPrice', 'N/A')
         mkt_cap   = info.get('marketCap', 'N/A')
         pe_ratio  = info.get('trailingPE', 'N/A')
         fwd_pe    = info.get('forwardPE', 'N/A')
@@ -59,122 +41,58 @@ async def get_stock_data(ticker: str) -> str:
         week_low  = info.get('fiftyTwoWeekLow', 'N/A')
         revenue   = info.get('totalRevenue', 'N/A')
         margins   = info.get('profitMargins', 'N/A')
-        name      = info.get('longName') or info.get('shortName') or ticker
+        name      = info.get('longName', ticker)
         sector    = info.get('sector', 'N/A')
         analyst   = info.get('recommendationKey', 'N/A')
         target    = info.get('targetMeanPrice', 'N/A')
 
-        # Format numbers
-        if isinstance(mkt_cap,   (int, float)): mkt_cap   = f"${mkt_cap/1e9:.2f}B"
-        if isinstance(revenue,   (int, float)): revenue   = f"${revenue/1e9:.2f}B"
-        if isinstance(div_yield, float):        div_yield = f"{div_yield*100:.2f}%"
-        if isinstance(margins,   float):        margins   = f"{margins*100:.2f}%"
-        if isinstance(pe_ratio,  float):        pe_ratio  = f"{pe_ratio:.2f}x"
-        if isinstance(fwd_pe,    float):        fwd_pe    = f"{fwd_pe:.2f}x"
-
-        # If we couldn't get price show clear message
-        if price == 'N/A':
-            print(f"Warning: Could not get price for {ticker} after 3 attempts")
-
-        # Build keywords from company name for news filtering
-        keywords = [ticker.lower()]
-        for word in name.split():
-            if len(word) > 3 and word.lower() not in [
-                'inc.', 'inc', 'corp', 'corp.', 'ltd',
-                'ltd.', 'the', 'and', 'corporation', 'company'
-            ]:
-                keywords.append(word.lower())
-
-        # Fetch news from Yahoo Finance RSS
-        news_lines = []
-        try:
-            url = f"https://feeds.finance.yahoo.com/rss/2.0/headline?s={ticker}&region=US&lang=en-US"
-            async with httpx.AsyncClient(timeout=15) as client:
-                resp = await client.get(url, headers={
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-                })
-
-            if resp.status_code == 200:
-                root    = ET.fromstring(resp.text)
-                channel = root.find('channel')
-                items   = channel.findall('item') if channel else []
-
-                relevant = []
-                fallback = []
-
-                for item in items[:20]:
-                    title    = item.findtext('title', '')
-                    desc     = item.findtext('description', '')
-                    combined = (title + ' ' + desc).lower()
-                    pubdate  = item.findtext('pubDate', '')
-
-                    if pubdate:
-                        try:
-                            from email.utils import parsedate_to_datetime
-                            dt      = parsedate_to_datetime(pubdate)
-                            pubdate = dt.strftime('%b %d %Y')
-                        except Exception:
-                            pubdate = pubdate[:16]
-
-                    entry = f"- [{pubdate}] {title}"
-                    fallback.append(entry)
-
-                    if any(kw in combined for kw in keywords):
-                        relevant.append(entry)
-
-                headlines  = relevant[:5] if len(relevant) >= 2 else fallback[:5]
-                news_lines = headlines
-
-        except Exception as e:
-            logger.warning(f"News fetch failed for {ticker}: {e}")
-            news_lines = ["- News temporarily unavailable"]
-
-        news_text = "\n".join(news_lines) if news_lines else "- No recent news found"
+        # Format large numbers
+        if isinstance(mkt_cap, (int, float)):
+            mkt_cap = f"${mkt_cap/1e9:.2f}B"
+        if isinstance(revenue, (int, float)):
+            revenue = f"${revenue/1e9:.2f}B"
+        if isinstance(div_yield, float):
+            div_yield = f"{div_yield*100:.2f}%"
+        if isinstance(margins, float):
+            margins = f"{margins*100:.2f}%"
+        if isinstance(pe_ratio, float):
+            pe_ratio = f"{pe_ratio:.2f}x"
+        if isinstance(fwd_pe, float):
+            fwd_pe = f"{fwd_pe:.2f}x"
 
         timestamp = datetime.now(UTC).strftime('%B %d, %Y at %H:%M UTC')
 
         result = f"""
-{name} ({ticker}) — Market Data
+═══════════════════════════════════════
+{name} ({ticker.upper()}) — Live Data
 Retrieved: {timestamp}
-Source: Yahoo Finance API + RSS
-
-MARKET DATA:
-Price:          ${price}
-Market Cap:     {mkt_cap}
-Sector:         {sector}
-P/E Ratio:      {pe_ratio}
-Forward P/E:    {fwd_pe}
-Dividend Yield: {div_yield}
-Profit Margins: {margins}
-52-Week High:   ${week_high}
-52-Week Low:    ${week_low}
-Annual Revenue: {revenue}
-Analyst Rating: {analyst}
-Analyst Target: ${target}
-
-RECENT NEWS:
-{news_text}
-
-NOTE: Use this data directly. Do not override with memory.
+Source: Yahoo Finance API (yfinance library)
+═══════════════════════════════════════
+Current Price:      ${price}
+Market Cap:         {mkt_cap}
+Sector:             {sector}
+P/E Ratio:          {pe_ratio}
+Forward P/E:        {fwd_pe}
+Dividend Yield:     {div_yield}
+Profit Margins:     {margins}
+52-Week High:       ${week_high}
+52-Week Low:        ${week_low}
+Annual Revenue:     {revenue}
+Analyst Rating:     {analyst}
+Analyst Target:     ${target}
+═══════════════════════════════════════
+NOTE: This data is from Yahoo Finance API.
+      Prices are real-time/delayed 15 min.
+      Do NOT override with memory estimates.
 """
-        logger.info(f"Fetched {ticker}: ${price} + {len(news_lines)} news items")
+        logger.info(f"Successfully fetched {ticker}: ${price}")
         return result
 
+    except ImportError:
+        return "Error: yfinance not installed. Use browser tools instead."
     except Exception as e:
         logger.error(f"Error fetching {ticker}: {type(e).__name__}: {e}")
-        # Return partial data so agent can still generate analysis
-        return f"""
-{ticker} — Data temporarily limited
-Note: Yahoo Finance rate limiting detected.
-
-Please analyze {ticker} based on:
-- General market knowledge for this sector
-- Any news context available
-- Acknowledge data limitations in your response
-
-Do NOT make up specific prices or metrics.
-State clearly that live data is temporarily unavailable.
-"""
+        return f"Error fetching data for {ticker}: {str(e)}"
 
 
 

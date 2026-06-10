@@ -15,14 +15,14 @@ from dotenv import load_dotenv
 from agents import Agent, Runner, trace
 from agents.extensions.models.litellm_model import LitellmModel
 from fastapi.middleware.cors import CORSMiddleware
-import asyncio
+
 logging.getLogger("LiteLLM").setLevel(logging.CRITICAL)
 
 from prompts import get_agent_instructions, get_deep_research_instructions, DEFAULT_RESEARCH_PROMPT
 from mcp_servers import create_playwright_mcp_server
 from tools import ingest_financial_document, get_stock_data
-GUARDRAIL_ID      = os.getenv("BEDROCK_GUARDRAIL_ID", "eea439luokx8")
-GUARDRAIL_VERSION = os.getenv("BEDROCK_GUARDRAIL_VERSION", "1")
+GUARDRAIL_ID      = "eea439luokx8"
+GUARDRAIL_VERSION = "1"
 
 load_dotenv(override=True)
 
@@ -114,6 +114,13 @@ async def run_data_agent(topic: str) -> str:
             name         = "Alex Data Researcher",
             instructions = get_agent_instructions(),
             model        = model,
+            extra_body     = {
+            "guardrailConfig": {
+                "guardrailIdentifier": GUARDRAIL_ID,
+                "guardrailVersion":    GUARDRAIL_VERSION,
+                "trace":               "enabled"
+            }
+        },
             tools        = [
                 get_stock_data,
                 ingest_financial_document,
@@ -129,54 +136,6 @@ async def run_data_agent(topic: str) -> str:
 
     return result.final_output
 
-async def apply_guardrail(text: str) -> tuple[str, bool]:
-    """
-    Apply Bedrock Guardrail to agent output.
-    
-    Why post-processing approach:
-      OpenAI Agents SDK doesn't support guardrail
-      config natively. ApplyGuardrail API works
-      independently of any agent framework.
-    
-    Returns:
-      (filtered_text, was_blocked)
-    """
-    try:
-        loop    = asyncio.get_event_loop()
-        bedrock = boto3.client(
-            'bedrock-runtime',
-            region_name=REGION
-        )
-
-        # Run in executor since boto3 is synchronous
-        response = await loop.run_in_executor(
-            None,
-            lambda: bedrock.apply_guardrail(
-                guardrailIdentifier = GUARDRAIL_ID,
-                guardrailVersion    = GUARDRAIL_VERSION,
-                source              = 'OUTPUT',
-                content             = [{"text": {"text": text}}]
-            )
-        )
-
-        if response['action'] == 'GUARDRAIL_INTERVENED':
-            print(f"Guardrail blocked response")
-            # Emit metric for monitoring
-            emit_metric('GuardrailBlock', 1)
-            return (
-                "I can only help with financial research topics. "
-                "Please ask about stocks, markets, or investment analysis.",
-                True
-            )
-
-        print(f"Guardrail passed")
-        return (text, False)
-
-    except Exception as e:
-        # Fail open — if guardrail errors return original
-        # Why: Better to show unfiltered than break the app
-        print(f"Guardrail error (failing open): {e}")
-        return (text, False)
 
 # ============================================
 # Deep Agent — SEC EDGAR Research
@@ -205,6 +164,13 @@ async def run_deep_agent(topic: str) -> str:
                 name         = "Alex Deep Researcher",
                 instructions = get_deep_research_instructions(),
                 model        = model,
+                extra_body   = {
+                    "guardrailConfig": {
+                        "guardrailIdentifier": GUARDRAIL_ID,
+                        "guardrailVersion":    GUARDRAIL_VERSION,
+                        "trace":               "enabled"
+                    }
+                },
                 tools        = [
                     ingest_financial_document,
                 ],
@@ -252,28 +218,43 @@ async def health():
 
 @app.post("/research")
 async def research(request: ResearchRequest):
+    """
+    Fast research endpoint.
+    Emits CloudWatch metrics for every request.
+
+    Metrics emitted:
+      ResearchQuery   → 1 per request (count queries)
+      ResearchLatency → seconds taken (track speed)
+      ResearchSuccess → 1=success, 0=failure
+      ResearchMode    → "fast" (track mode usage)
+    """
     start_time = time.time()
     topic      = request.topic or "trending financial topics today"
 
+    # Emit query count metric
+    # Why: Track how many queries Alex handles
     emit_metric('ResearchQuery', 1, dimensions={'Mode': 'fast'})
 
     try:
         response = await run_data_agent(topic)
+        latency  = time.time() - start_time
 
-        # Apply guardrail post-processing
-        filtered_response, was_blocked = await apply_guardrail(response)
-
-        latency = time.time() - start_time
+        # Emit success metrics
+        # Why: Track speed and success rate separately
         emit_metric('ResearchLatency', latency, 'Seconds', {'Mode': 'fast'})
         emit_metric('ResearchSuccess', 1, dimensions={'Mode': 'fast'})
 
         print(f"Research complete — {latency:.1f}s")
-        return {"status": "success", "result": filtered_response}
+        return {"status": "success", "result": response}
 
     except Exception as e:
         latency = time.time() - start_time
+
+        # Emit failure metric
+        # Why: Alert when error rate exceeds threshold
         emit_metric('ResearchSuccess', 0, dimensions={'Mode': 'fast'})
         emit_metric('ResearchError',   1, dimensions={'Mode': 'fast'})
+
         logger.error(f"Research error: {e}")
         import traceback
         traceback.print_exc()
@@ -282,6 +263,10 @@ async def research(request: ResearchRequest):
 
 @app.post("/research/deep")
 async def research_deep(request: ResearchRequest):
+    """
+    Deep research endpoint — Playwright + SEC EDGAR.
+    Same metric pattern as fast research.
+    """
     start_time = time.time()
     topic      = request.topic or "latest SEC filings"
 
@@ -289,25 +274,25 @@ async def research_deep(request: ResearchRequest):
 
     try:
         response = await run_deep_agent(topic)
+        latency  = time.time() - start_time
 
-        # Apply guardrail post-processing
-        filtered_response, was_blocked = await apply_guardrail(response)
-
-        latency = time.time() - start_time
         emit_metric('ResearchLatency', latency, 'Seconds', {'Mode': 'deep'})
         emit_metric('ResearchSuccess', 1, dimensions={'Mode': 'deep'})
 
         print(f"Deep research complete — {latency:.1f}s")
-        return {"status": "success", "result": filtered_response}
+        return {"status": "success", "result": response}
 
     except Exception as e:
         latency = time.time() - start_time
+
         emit_metric('ResearchSuccess', 0, dimensions={'Mode': 'deep'})
         emit_metric('ResearchError',   1, dimensions={'Mode': 'deep'})
+
         logger.error(f"Deep research error: {e}")
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.get("/research/auto")
 async def research_auto():
