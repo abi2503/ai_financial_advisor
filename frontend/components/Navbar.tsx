@@ -2,13 +2,15 @@
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { UserButton } from '@clerk/nextjs'
-import { Brain, LayoutDashboard, MessageSquare, PieChart, History } from 'lucide-react'
+import { Brain, LayoutDashboard, MessageSquare, PieChart, History, BarChart2, Calculator } from 'lucide-react'
 
 const navItems = [
-  { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
-  { href: '/research',  label: 'Research',  icon: MessageSquare },
-  { href: '/portfolio', label: 'Portfolio', icon: PieChart },
-  { href: '/history',   label: 'History',   icon: History },
+  { href: '/dashboard',  label: 'Dashboard',  icon: LayoutDashboard },
+  { href: '/research',   label: 'Research',   icon: MessageSquare },
+  { href: '/portfolio',  label: 'Portfolio',  icon: PieChart },
+  { href: '/charts',     label: 'Charts',     icon: BarChart2 },
+  { href: '/retirement', label: 'Retirement', icon: Calculator },
+  { href: '/history',    label: 'History',    icon: History },
 ]
 
 export default function Navbar() {
@@ -23,7 +25,15 @@ export default function Navbar() {
         {navItems.map(({ href, label, icon: Icon }) => {
           const active = pathname === href
           return (
-            <Link key={href} href={href} className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition ${active ? 'bg-blue-600/20 text-blue-400' : 'text-gray-400 hover:text-white hover:bg-gray-800'}`}>
+            <Link
+              key={href}
+              href={href}
+              className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition ${
+                active
+                  ? 'bg-blue-600/20 text-blue-400'
+                  : 'text-gray-400 hover:text-white hover:bg-gray-800'
+              }`}
+            >
               <Icon size={16} />
               {label}
             </Link>

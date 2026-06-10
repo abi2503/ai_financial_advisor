@@ -130,33 +130,71 @@ def get_research_history(user_id: str, limit: int = 10) -> list:
     ]
 
 
-def add_to_portfolio(user_id: str, ticker: str, company: str) -> dict:
+def add_to_portfolio(
+    user_id:        str,
+    ticker:         str,
+    company:        str,
+    shares:         float = 0,
+    purchase_price: float = 0,
+    asset_class:    str   = 'stocks',
+    sector:         str   = '',
+    notes:          str   = ''
+) -> dict:
+    """
+    Add a stock to user portfolio with full position details.
+    
+    Why new fields:
+      shares + purchase_price → calculate gain/loss
+      asset_class → portfolio diversification analysis
+      sector → sector concentration analysis
+      notes → user annotations
+    """
     sql = """
-        INSERT INTO portfolios (user_id, ticker, company)
-        VALUES (:user_id::uuid, :ticker, :company)
+        INSERT INTO portfolios 
+          (user_id, ticker, company, shares, purchase_price,
+           asset_class, sector, notes)
+        VALUES 
+          (:user_id::uuid, :ticker, :company, :shares,
+           :purchase_price, :asset_class, :sector, :notes)
         ON CONFLICT DO NOTHING
-        RETURNING id, ticker, company, added_at
+        RETURNING id, ticker, company, shares, purchase_price,
+                  asset_class, sector, added_at
     """
     parameters = [
-        {"name": "user_id",  "value": {"stringValue": user_id}},
-        {"name": "ticker",   "value": {"stringValue": ticker.upper()}},
-        {"name": "company",  "value": {"stringValue": company}},
+        {"name": "user_id",        "value": {"stringValue": user_id}},
+        {"name": "ticker",         "value": {"stringValue": ticker.upper()}},
+        {"name": "company",        "value": {"stringValue": company}},
+        {"name": "shares",         "value": {"doubleValue": float(shares)}},
+        {"name": "purchase_price", "value": {"doubleValue": float(purchase_price)}},
+        {"name": "asset_class",    "value": {"stringValue": asset_class}},
+        {"name": "sector",         "value": {"stringValue": sector}},
+        {"name": "notes",          "value": {"stringValue": notes}},
     ]
     response = execute_sql(sql, parameters)
     records  = response.get("records", [])
     if records:
         return {
-            "id":       records[0][0]["stringValue"],
-            "ticker":   records[0][1]["stringValue"],
-            "company":  records[0][2]["stringValue"],
-            "added_at": records[0][3]["stringValue"],
+            "id":             records[0][0]["stringValue"],
+            "ticker":         records[0][1]["stringValue"],
+            "company":        records[0][2]["stringValue"],
+            "shares":         records[0][3].get("doubleValue", 0),
+            "purchase_price": records[0][4].get("doubleValue", 0),
+            "asset_class":    records[0][5]["stringValue"],
+            "sector":         records[0][6]["stringValue"],
+            "added_at":       records[0][7]["stringValue"],
         }
     return None
 
 
 def get_portfolio(user_id: str) -> list:
+    """
+    Get full portfolio with all position details.
+    Returns shares, purchase_price, asset_class, sector
+    for gain/loss and diversification calculations.
+    """
     sql = """
-        SELECT id, ticker, company, added_at
+        SELECT id, ticker, company, shares, purchase_price,
+               asset_class, sector, notes, added_at
         FROM portfolios
         WHERE user_id = :user_id::uuid
         ORDER BY added_at DESC
@@ -167,10 +205,15 @@ def get_portfolio(user_id: str) -> list:
     response = execute_sql(sql, parameters)
     return [
         {
-            "id":       r[0]["stringValue"],
-            "ticker":   r[1]["stringValue"],
-            "company":  r[2]["stringValue"],
-            "added_at": r[3]["stringValue"],
+            "id":             r[0]["stringValue"],
+            "ticker":         r[1]["stringValue"],
+            "company":        r[2]["stringValue"],
+            "shares":         r[3].get("doubleValue", 0),
+            "purchase_price": r[4].get("doubleValue", 0),
+            "asset_class":    r[5]["stringValue"],
+            "sector":         r[6]["stringValue"],
+            "notes":          r[7]["stringValue"],
+            "added_at":       r[8]["stringValue"],
         }
         for r in response.get("records", [])
     ]

@@ -116,7 +116,8 @@ async def get_stock_data(ticker: str) -> str:
                         except Exception:
                             pubdate = pubdate[:16]
 
-                    entry = f"- [{pubdate}] {title}"
+                    link  = item.findtext('link', '')
+                    entry = f"- [{pubdate}] [{title}] ({link})" if link else f"- [{pubdate}] {title}"
                     fallback.append(entry)
 
                     if any(kw in combined for kw in keywords):
@@ -283,7 +284,8 @@ async def get_news(ticker: str) -> str:
                 except Exception:
                     pubdate = pubdate[:16]
 
-            entry = f"- [{pubdate}] {title}"
+            link  = item.findtext('link', '')
+            entry = f"- [{pubdate}] [{title}]({link})" if link else f"- [{pubdate}] {title}"
             fallback.append(entry)
 
             # Check relevance dynamically

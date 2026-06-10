@@ -218,6 +218,30 @@ if [ "$VERCEL_STATUS" = "200" ]; then
 else
   echo "  ❌ HTTP $VERCEL_STATUS"
 fi
+# ============================================
+# 12. AWS Cost This Month
+# ============================================
+echo ""
+echo "💰 AWS Cost This Month..."
+COST=$(aws ce get-cost-and-usage \
+  --time-period Start=$(date +%Y-%m-01),End=$(date +%Y-%m-%d) \
+  --granularity MONTHLY \
+  --metrics BlendedCost \
+  --region us-east-1 \
+  --query "ResultsByTime[0].Total.BlendedCost.Amount" \
+  --output text 2>/dev/null)
+
+if [ ! -z "$COST" ]; then
+  echo "  💵 Month to date: \$$COST"
+  
+  # Alert if over $10
+  COST_INT=$(echo $COST | cut -d'.' -f1)
+  if [ "$COST_INT" -gt "10" ]; then
+    echo "  ⚠️  Cost exceeding \$10 — check what's running!"
+  else
+    echo "  ✅ Cost within budget"
+  fi
+fi
 
 # ============================================
 # Summary
@@ -232,3 +256,9 @@ echo "  Deploy image: cd backend/researcher && bash deploy.sh"
 echo "  Start dev:    cd frontend && npm run dev"
 echo "  Enable cron:  bash scripts/toggle_eventbridge.sh enable"
 echo ""
+echo ""
+echo "💡 Cost saving tip:"
+echo "   Destroy SageMaker + ECS when done:"
+echo "   cd terraform/2_sagemaker && terraform destroy -auto-approve"
+echo "   cd terraform/4_researcher && terraform destroy -auto-approve"
+echo "   Daily saving: ~\$4.83/day"

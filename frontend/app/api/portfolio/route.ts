@@ -28,7 +28,7 @@ async function executeWithRetry(command: any, retries = 3) {
 async function getDbUserId(clerkId: string): Promise<string | null> {
   const result = await executeWithRetry(new ExecuteStatementCommand({
     ...DB,
-    sql: `SELECT id FROM users WHERE clerk_id = :clerk_id LIMIT 1`,
+    sql:        `SELECT id FROM users WHERE clerk_id = :clerk_id LIMIT 1`,
     parameters: [{ name: 'clerk_id', value: { stringValue: clerkId } }]
   })) as any
   return result.records?.[0]?.[0]?.stringValue || null
@@ -42,14 +42,13 @@ export async function GET() {
     }
 
     const dbUserId = await getDbUserId(userId)
-    if (!dbUserId) {
-      return NextResponse.json({ portfolio: [] })
-    }
+    if (!dbUserId) return NextResponse.json({ portfolio: [] })
 
     const result = await executeWithRetry(new ExecuteStatementCommand({
       ...DB,
       sql: `
-        SELECT id, ticker, company, added_at
+        SELECT id, ticker, company, shares, purchase_price,
+               asset_class, sector, notes, added_at
         FROM portfolios
         WHERE user_id = :user_id::uuid
         ORDER BY added_at DESC
@@ -58,10 +57,15 @@ export async function GET() {
     })) as any
 
     const portfolio = (result.records || []).map((r: any) => ({
-      id:       r[0]?.stringValue,
-      ticker:   r[1]?.stringValue,
-      company:  r[2]?.stringValue,
-      added_at: r[3]?.stringValue,
+      id:             r[0]?.stringValue,
+      ticker:         r[1]?.stringValue,
+      company:        r[2]?.stringValue,
+      shares:         r[3]?.doubleValue || 0,
+      purchase_price: r[4]?.doubleValue || 0,
+      asset_class:    r[5]?.stringValue || 'stocks',
+      sector:         r[6]?.stringValue || '',
+      notes:          r[7]?.stringValue || '',
+      added_at:       r[8]?.stringValue,
     }))
 
     return NextResponse.json({ portfolio })
@@ -79,28 +83,53 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
-    const { ticker, company } = await req.json()
+    const {
+      ticker,
+      company,
+      shares         = 0,
+      purchase_price = 0,
+      asset_class    = 'stocks',
+      sector         = '',
+      notes          = ''
+    } = await req.json()
+
     if (!ticker || !company) {
-      return NextResponse.json({ error: 'Missing ticker or company' }, { status: 400 })
+      return NextResponse.json(
+        { error: 'Missing ticker or company' },
+        { status: 400 }
+      )
     }
 
     const dbUserId = await getDbUserId(userId)
     if (!dbUserId) {
-      return NextResponse.json({ error: 'User not found — sync first' }, { status: 404 })
+      return NextResponse.json(
+        { error: 'User not found — sync first' },
+        { status: 404 }
+      )
     }
 
     const result = await executeWithRetry(new ExecuteStatementCommand({
       ...DB,
       sql: `
-        INSERT INTO portfolios (user_id, ticker, company)
-        VALUES (:user_id::uuid, :ticker, :company)
+        INSERT INTO portfolios 
+          (user_id, ticker, company, shares, purchase_price,
+           asset_class, sector, notes)
+        VALUES 
+          (:user_id::uuid, :ticker, :company, :shares,
+           :purchase_price, :asset_class, :sector, :notes)
         ON CONFLICT DO NOTHING
-        RETURNING id, ticker, company, added_at
+        RETURNING id, ticker, company, shares, purchase_price,
+                  asset_class, sector, added_at
       `,
       parameters: [
-        { name: 'user_id', value: { stringValue: dbUserId } },
-        { name: 'ticker',  value: { stringValue: ticker.toUpperCase() } },
-        { name: 'company', value: { stringValue: company } },
+        { name: 'user_id',         value: { stringValue: dbUserId } },
+        { name: 'ticker',          value: { stringValue: ticker.toUpperCase() } },
+        { name: 'company',         value: { stringValue: company } },
+        { name: 'shares',          value: { doubleValue: parseFloat(shares) || 0 } },
+        { name: 'purchase_price',  value: { doubleValue: parseFloat(purchase_price) || 0 } },
+        { name: 'asset_class',     value: { stringValue: asset_class } },
+        { name: 'sector',          value: { stringValue: sector } },
+        { name: 'notes',           value: { stringValue: notes } },
       ]
     })) as any
 
@@ -108,10 +137,14 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({
       success: true,
       stock: {
-        id:       record?.[0]?.stringValue,
-        ticker:   record?.[1]?.stringValue,
-        company:  record?.[2]?.stringValue,
-        added_at: record?.[3]?.stringValue,
+        id:             record?.[0]?.stringValue,
+        ticker:         record?.[1]?.stringValue,
+        company:        record?.[2]?.stringValue,
+        shares:         record?.[3]?.doubleValue || 0,
+        purchase_price: record?.[4]?.doubleValue || 0,
+        asset_class:    record?.[5]?.stringValue,
+        sector:         record?.[6]?.stringValue,
+        added_at:       record?.[7]?.stringValue,
       }
     })
 
@@ -151,6 +184,44 @@ export async function DELETE(req: NextRequest) {
 
   } catch (error: any) {
     console.error('Portfolio DELETE error:', error)
+    return NextResponse.json({ error: error.message }, { status: 500 })
+  }
+}
+
+export async function PATCH(req: NextRequest) {
+  try {
+    const { userId } = await auth()
+    if (!userId) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    }
+
+    const { ticker, shares, purchase_price } = await req.json()
+    const dbUserId = await getDbUserId(userId)
+    if (!dbUserId) {
+      return NextResponse.json({ error: 'User not found' }, { status: 404 })
+    }
+
+    await executeWithRetry(new ExecuteStatementCommand({
+      ...DB,
+      sql: `
+        UPDATE portfolios
+        SET shares = :shares,
+            purchase_price = :purchase_price
+        WHERE user_id = :user_id::uuid
+        AND ticker = :ticker
+      `,
+      parameters: [
+        { name: 'user_id',        value: { stringValue: dbUserId } },
+        { name: 'ticker',         value: { stringValue: ticker.toUpperCase() } },
+        { name: 'shares',         value: { doubleValue: parseFloat(shares) || 0 } },
+        { name: 'purchase_price', value: { doubleValue: parseFloat(purchase_price) || 0 } },
+      ]
+    }))
+
+    return NextResponse.json({ success: true })
+
+  } catch (error: any) {
+    console.error('Portfolio PATCH error:', error)
     return NextResponse.json({ error: error.message }, { status: 500 })
   }
 }
