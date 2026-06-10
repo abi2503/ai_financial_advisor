@@ -80,32 +80,32 @@ export default async function LandingPage() {
             {
               icon:  <Clock className="text-blue-400" size={24} />,
               title: '24/7 Autonomous Research',
-              desc:  'Alex researches trending financial topics every 2 hours without any human input. Wake up to fresh intelligence every morning.',
+              desc:  'Scheduled AI workflows generate market research every 2 hours.',
             },
             {
               icon:  <Brain className="text-purple-400" size={24} />,
               title: 'Semantic Knowledge Base',
-              desc:  'Every research report stored as a searchable vector. Ask anything and find research by meaning not just keywords.',
+              desc:  'Semantic retrieval system built on vector embeddings and similarity search.',
             },
             {
               icon:  <Shield className="text-green-400" size={24} />,
               title: 'Portfolio Intelligence',
-              desc:  'Add your stocks and Alex monitors them continuously. Get alerts when risk signals are detected before they become problems.',
+              desc:  'Real-time stock tracking with automated risk and sentiment analysis.',
             },
             {
               icon:  <TrendingUp className="text-yellow-400" size={24} />,
               title: 'Real Market Data',
-              desc:  'Live prices from Yahoo Finance API combined with news context from real web browsing. No hallucinated numbers.',
+              desc:  'Combines market APIs, news sources, and web research into a unified pipeline.',
             },
             {
               icon:  <BarChart2 className="text-red-400" size={24} />,
               title: 'Multi-Agent Pipeline',
-              desc:  'Planner, Tagger, and Reporter agents work together to produce comprehensive research faster than any single AI.',
+              desc:  'Planner, Tagger, and Reporter agents coordinate through an orchestration layer.',
             },
             {
               icon:  <Zap className="text-orange-400" size={24} />,
               title: 'Ask Anything',
-              desc:  'Type any financial question. Alex decomposes it into research tasks, runs them in parallel, and synthesizes the answer.',
+              desc:  'Converts user queries into structured research workflows and actionable insights.',
             },
           ].map((f) => (
             <div key={f.title} className="p-6 bg-gray-900 border border-gray-800 rounded-xl hover:border-gray-600 transition">
