@@ -5,7 +5,17 @@
 # to verify all services are working
 # ============================================
 
-source .env
+# Find the script root and load .env
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(dirname "$SCRIPT_DIR")"
+
+if [ -f "$ROOT_DIR/.env" ]; then
+  set -a
+  source <(grep -v '^#' "$ROOT_DIR/.env" | sed 's/ *= */=/g')
+  set +a
+else
+  echo "⚠️  .env not found at $ROOT_DIR/.env"
+fi
 
 REGION=${DEFAULT_AWS_REGION:-us-east-1}
 
@@ -180,8 +190,8 @@ fi
 # ============================================
 echo ""
 echo "⏰ EventBridge Scheduler..."
-EB_STATUS=$(aws events describe-rule \
-  --name alex-research-scheduler \
+EB_STATUS=$(aws scheduler get-schedule \
+  --name "alex-auto-research" \
   --region $REGION \
   --query "State" \
   --output text 2>/dev/null)
@@ -191,7 +201,7 @@ if [ "$EB_STATUS" = "ENABLED" ]; then
 elif [ "$EB_STATUS" = "DISABLED" ]; then
   echo "  ⚠️  Disabled (run toggle_eventbridge.sh enable)"
 else
-  echo "  ❌ Not found"
+  echo "  ❌ Not found — run: cd terraform/6_agents && terraform apply"
 fi
 
 # ============================================
