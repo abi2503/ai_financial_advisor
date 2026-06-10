@@ -43,34 +43,34 @@ export default async function LandingPage() {
           <span className="text-blue-400"> at $50/month</span>
         </h1>
         <p className="text-xl text-gray-400 mb-10 max-w-2xl mx-auto">
-          Alex autonomously researches financial markets, builds a searchable
-          knowledge base, and delivers personalized intelligence — without any
-          human intervention.
+          Alex autonomously researches financial markets, builds a searchable knowledge base,
+          and delivers personalized intelligence — without any human intervention.
         </p>
         <div className="flex gap-4 justify-center">
-          {userId ? (
-            <Link
-              href="/dashboard"
-              className="px-8 py-4 bg-blue-600 hover:bg-blue-500 rounded-xl text-white font-semibold text-lg transition"
-            >
-              Go to Dashboard →
-            </Link>
-          ) : (
-            <Link
-              href="/sign-up"
-              className="px-8 py-4 bg-blue-600 hover:bg-blue-500 rounded-xl text-white font-semibold text-lg transition"
-            >
-              Start Free →
-            </Link>
-          )}
-          <Link
-            href="#features"
-            className="px-8 py-4 border border-gray-700 hover:border-gray-500 rounded-xl text-gray-300 font-semibold text-lg transition"
-          >
+          <Link href="/sign-up" className="px-8 py-4 bg-blue-600 hover:bg-blue-500 rounded-xl text-white font-semibold text-lg transition">
+            Start Free →
+          </Link>
+          <Link href="#features" className="px-8 py-4 border border-gray-700 hover:border-gray-500 rounded-xl text-gray-300 font-semibold text-lg transition">
             See How It Works
           </Link>
         </div>
       </section>
+
+      {/* Stats */}
+      {/*<section className="border-y border-gray-800 py-12">
+        <div className="max-w-4xl mx-auto grid grid-cols-3 gap-8 text-center px-6">
+          {[
+            { value: '$24,000', label: 'Bloomberg Terminal/year' },
+            { value: '$50',     label: 'Alex AI/month' },
+            { value: '480x',    label: 'Cost reduction' },
+          ].map((stat) => (
+            <div key={stat.label}>
+              <div className="text-3xl font-bold text-blue-400 mb-1">{stat.value}</div>
+              <div className="text-gray-500 text-sm">{stat.label}</div>
+            </div>
+          ))}
+        </div>
+      </section>*/}
 
       {/* Features */}
       <section id="features" className="max-w-5xl mx-auto px-6 py-24">
@@ -119,24 +119,18 @@ export default async function LandingPage() {
         </div>
       </section>
 
-      {/* CTA — only show to logged out users */}
-      {!userId && (
-        <section className="max-w-2xl mx-auto px-6 py-24 text-center">
-          <h2 className="text-3xl font-bold text-white mb-4">
-            Start your free trial today
-          </h2>
-          <p className="text-gray-400 mb-8">
-            No credit card required. Get access to autonomous financial
-            research immediately.
-          </p>
-          <Link
-            href="/sign-up"
-            className="px-10 py-4 bg-blue-600 hover:bg-blue-500 rounded-xl text-white font-semibold text-lg transition inline-block"
-          >
-            Get Started Free →
-          </Link>
-        </section>
-      )}
+      {/* CTA */}
+      <section className="max-w-2xl mx-auto px-6 py-24 text-center">
+        <h2 className="text-3xl font-bold text-white mb-4">
+          Start your free trial today
+        </h2>
+        <p className="text-gray-400 mb-8">
+          No credit card required. Get access to autonomous financial research immediately.
+        </p>
+        <Link href="/sign-up" className="px-10 py-4 bg-blue-600 hover:bg-blue-500 rounded-xl text-white font-semibold text-lg transition inline-block">
+          Get Started Free →
+        </Link>
+      </section>
 
       {/* Footer */}
       <footer className="border-t border-gray-800 px-6 py-8 text-center text-gray-600 text-sm">
