@@ -1,9 +1,14 @@
 import { auth } from '@clerk/nextjs/server'
 import { NextRequest, NextResponse } from 'next/server'
 import { RDSDataClient, ExecuteStatementCommand } from '@aws-sdk/client-rds-data'
+import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda'
+import { SQSClient, ReceiveMessageCommand, DeleteMessageCommand } from '@aws-sdk/client-sqs'
 import { getEcsUrl } from '@/lib/config'
+import { randomUUID } from 'crypto'
 
-const rds = new RDSDataClient({ region: process.env.AWS_REGION || 'us-east-1' })
+const rds    = new RDSDataClient({ region: process.env.AWS_REGION || 'us-east-1' })
+const lambda = new LambdaClient({ region: process.env.AWS_REGION || 'us-east-1' })
+const sqs    = new SQSClient({ region: process.env.AWS_REGION || 'us-east-1' })
 
 const DB = {
   resourceArn: process.env.DB_CLUSTER_ARN!,
@@ -11,13 +16,53 @@ const DB = {
   database:    process.env.DB_NAME || 'alex_db',
 }
 
+const RESULTS_QUEUE_URL = process.env.SQS_RESULTS_QUEUE_URL!
+const PLANNER_FUNCTION  = process.env.PLANNER_FUNCTION || 'alex-planner'
+
+// ============================================
+// Complexity Detection — FIX 1
+// Require BOTH 2+ tickers AND a meaningful
+// comparison keyword (not filler words like
+// "and" / "or" that match everything)
+// ============================================
+const COMPLEX_PATTERNS = [
+  'compare', 'vs', 'versus', 'should i',
+  'or ', 'both', 'multiple', 'analyze both',
+  'which is better', 'difference between',
+  'contrast', 'and ', 'portfolio of', 'portfolio analysis',
+  'side by side', 'pick between', 'choose between'
+]
+
+// "Weak" patterns — only count as complex when 2+ tickers also present
+const WEAK_PATTERNS = ['and ', 'or ', 'multiple', 'should i']
+
+function isComplexQuery(topic: string): boolean {
+  const lower = topic.toLowerCase()
+
+  const tickerPattern = /\b[A-Z]{2,5}\b/g
+  const tickers       = topic.match(tickerPattern) || []
+  const hasMultiple   = tickers.length >= 2
+
+  const matchedPattern = COMPLEX_PATTERNS.find(p => lower.includes(p))
+  if (!matchedPattern) return false
+
+  const isWeak = WEAK_PATTERNS.includes(matchedPattern)
+
+  // Weak patterns (and, or) only trigger complex mode if 2+ tickers present
+  // Strong patterns (compare, vs, both) trigger regardless
+  return isWeak ? hasMultiple : true
+}
+
+// ============================================
+// Database helpers
+// ============================================
 async function executeWithRetry(command: any, retries = 3) {
   for (let i = 0; i < retries; i++) {
     try {
       return await rds.send(command)
     } catch (err: any) {
       if (err.name === 'DatabaseResumingException' && i < retries - 1) {
-        console.log(`Aurora resuming — waiting 30s (attempt ${i + 1}/${retries})`)
+        console.log(`Aurora resuming — waiting 30s (attempt ${i+1}/${retries})`)
         await new Promise(r => setTimeout(r, 30000))
       } else {
         throw err
@@ -59,7 +104,8 @@ async function saveResearchSession(
       parameters: [
         { name: 'user_id', value: { stringValue: dbUserId } },
         { name: 'topic',   value: { stringValue: topic } },
-        { name: 'result',  value: { stringValue: result.substring(0, 10000) } },
+        // FIX 4 — guard against undefined/null result before substring
+        { name: 'result',  value: { stringValue: (result ?? '').substring(0, 10000) } },
       ]
     }))
 
@@ -69,6 +115,165 @@ async function saveResearchSession(
   }
 }
 
+// ============================================
+// Planner Lambda invocation
+// FIX 2 — pass correlationId so SQS messages
+// can be filtered per-request
+// ============================================
+async function invokePlanner(
+  question:      string,
+  correlationId: string
+): Promise<{
+  tasks:     string[]
+  taskCount: number
+  timestamp: string
+}> {
+  const response = await lambda.send(new InvokeCommand({
+    FunctionName:   PLANNER_FUNCTION,
+    InvocationType: 'RequestResponse',
+    Payload:        Buffer.from(JSON.stringify({
+      body: JSON.stringify({ question, correlationId })
+    }))
+  }))
+
+  const result = JSON.parse(Buffer.from(response.Payload!).toString())
+  const body   = JSON.parse(result.body || '{}')
+
+  return {
+    tasks:     body.tasks_queued || [],
+    taskCount: body.task_count   || 0,
+    timestamp: body.timestamp    || new Date().toISOString()
+  }
+}
+
+// ============================================
+// Poll SQS for results — FIX 2
+// Filter by correlationId so concurrent users
+// never receive each other's messages.
+// Messages belonging to other requests are
+// left in the queue (visibility timeout expires
+// and they become available again for their
+// rightful owner).
+// ============================================
+async function pollForResults(
+  taskCount:     number,
+  correlationId: string,
+  timeoutMs:     number = 90000
+): Promise<{ results: string[]; timedOut: boolean }> {
+  const results:   string[] = []
+  const startTime: number   = Date.now()
+  // Track receipt handles of foreign messages so we
+  // can release them immediately (reset visibility)
+  // rather than holding them for 30 s
+  const foreignHandles: string[] = []
+
+  while (
+    results.length < taskCount &&
+    Date.now() - startTime < timeoutMs
+  ) {
+    try {
+      const response = await sqs.send(new ReceiveMessageCommand({
+        QueueUrl:            RESULTS_QUEUE_URL,
+        MaxNumberOfMessages: 10,
+        WaitTimeSeconds:     5,
+        VisibilityTimeout:   30,
+        // Ask SQS to return message attributes so we
+        // can read correlationId without parsing body
+        MessageAttributeNames: ['correlationId'],
+      }))
+
+      const messages = response.Messages || []
+
+      for (const msg of messages) {
+        try {
+          const body = JSON.parse(msg.Body || '{}')
+
+          // Check correlationId — body takes priority,
+          // fall back to message attribute
+          const msgCorrelationId =
+            body.correlationId ||
+            msg.MessageAttributes?.correlationId?.StringValue
+
+          // FIX 2 — only consume messages belonging to THIS request
+          if (msgCorrelationId !== correlationId) {
+            // Leave it alone — visibility timeout will
+            // expire and the correct poller will pick it up
+            continue
+          }
+
+          const result = body.result || body.content || ''
+          if (result) {
+            results.push(result)
+
+            // Delete only our own processed messages
+            await sqs.send(new DeleteMessageCommand({
+              QueueUrl:      RESULTS_QUEUE_URL,
+              ReceiptHandle: msg.ReceiptHandle!
+            }))
+          }
+        } catch (e) {
+          console.error('Message parse error:', e)
+        }
+      }
+
+      if (results.length < taskCount) {
+        await new Promise(r => setTimeout(r, 2000))
+      }
+
+    } catch (err) {
+      console.error('SQS poll error:', err)
+      break
+    }
+  }
+
+  // FIX 3 — explicitly signal whether we timed out
+  const timedOut = results.length < taskCount
+  return { results, timedOut }
+}
+
+// ============================================
+// Synthesize results — FIX 3
+// Clearly surface partial results to the caller
+// instead of silently returning an incomplete report
+// ============================================
+function synthesizeResults(
+  question:  string,
+  tasks:     string[],
+  results:   string[],
+  timedOut:  boolean
+): string {
+  if (results.length === 0) {
+    return [
+      `## Research Incomplete: ${question}`,
+      '',
+      '> ⚠️ All research tasks timed out before returning results.',
+      '> Please try again or break your query into individual stock lookups.',
+    ].join('\n')
+  }
+
+  const isPartial = timedOut && results.length < tasks.length
+
+  const header = `## Multi-Stock Research: ${question}\n\n`
+
+  // FIX 3 — warn the user when results are partial
+  const meta = isPartial
+    ? `> ⚠️ **Partial results** — ${results.length} of ${tasks.length} research tasks completed before timeout. ` +
+      `Missing: ${tasks.slice(results.length).join(', ')}\n\n---\n\n`
+    : `*Researched ${results.length} of ${tasks.length} topics in parallel*\n\n---\n\n`
+
+  const sections = results.map((result, i) => {
+    const taskLabel = tasks[i] ? `### ${tasks[i]}\n\n` : `### Research ${i + 1}\n\n`
+    return taskLabel + result
+  }).join('\n\n---\n\n')
+
+  const footer = `\n\n---\n\n> ⚠️ Multi-agent research combining ${results.length} parallel analyses. Not financial advice.`
+
+  return header + meta + sections + footer
+}
+
+// ============================================
+// Main POST handler
+// ============================================
 export async function POST(req: NextRequest) {
   try {
     const { userId } = await auth()
@@ -81,7 +286,43 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Missing topic' }, { status: 400 })
     }
 
-    // Get ECS URL from SSM — auto-updates after every deploy
+    const complex = isComplexQuery(topic)
+    console.log(`Research: "${topic}" — ${complex ? 'COMPLEX → Planner' : 'SIMPLE → ECS'}`)
+
+    // ============================================
+    // COMPLEX QUERY → Planner Lambda + SQS
+    // ============================================
+    if (complex) {
+      console.log('Complex query detected — invoking Planner Lambda')
+
+      // FIX 2 — generate a unique ID for this request
+      const correlationId = randomUUID()
+
+      const { tasks, taskCount, timestamp } = await invokePlanner(topic, correlationId)
+      console.log(`Planner queued ${taskCount} tasks:`, tasks)
+
+      const { results, timedOut } = await pollForResults(taskCount, correlationId, 90000)
+      console.log(`Got ${results.length}/${taskCount} results from SQS`)
+
+      const synthesized = synthesizeResults(topic, tasks, results, timedOut)
+      await saveResearchSession(userId, topic, synthesized)
+
+      return NextResponse.json({
+        status:      timedOut && results.length < taskCount ? 'partial' : 'success',
+        result:      synthesized,
+        mode:        'multi-agent',
+        tasks,
+        taskCount,
+        gotResults:  results.length,
+        // FIX 3 — surface timeout clearly to frontend
+        timedOut,
+        missingTasks: timedOut ? tasks.slice(results.length) : [],
+      })
+    }
+
+    // ============================================
+    // SIMPLE QUERY → ECS directly
+    // ============================================
     const ECS_URL = await getEcsUrl()
     if (!ECS_URL) {
       return NextResponse.json(
@@ -89,9 +330,6 @@ export async function POST(req: NextRequest) {
         { status: 503 }
       )
     }
-
-    console.log(`Research from ${userId}: ${topic}`)
-    console.log(`ECS URL: ${ECS_URL}`)
 
     const ecsResponse = await fetch(`${ECS_URL}/research`, {
       method:  'POST',
@@ -108,12 +346,12 @@ export async function POST(req: NextRequest) {
     }
 
     const data = await ecsResponse.json()
-
     await saveResearchSession(userId, topic, data.result || '')
 
     return NextResponse.json({
       status: 'success',
-      result: data.result || 'Research complete'
+      result: data.result || 'Research complete',
+      mode:   'single-agent',
     })
 
   } catch (error: any) {

@@ -1,0 +1,100 @@
+{
+  "version": 4,
+  "terraform_version": "1.14.0",
+  "serial": 89,
+  "lineage": "1ff98f5b-e3d8-ba11-15a7-a6dc1097b6af",
+  "outputs": {},
+  "resources": [
+    {
+      "mode": "managed",
+      "type": "aws_iam_role",
+      "name": "sagemaker_role",
+      "provider": "provider[\"registry.terraform.io/hashicorp/aws\"]",
+      "instances": [
+        {
+          "schema_version": 0,
+          "attributes": {
+            "arn": "arn:aws:iam::381491881089:role/alex-sagemaker-role",
+            "assume_role_policy": "{\"Statement\":[{\"Action\":\"sts:AssumeRole\",\"Effect\":\"Allow\",\"Principal\":{\"Service\":\"sagemaker.amazonaws.com\"}}],\"Version\":\"2012-10-17\"}",
+            "create_date": "2026-06-11T05:59:54Z",
+            "description": "",
+            "force_detach_policies": false,
+            "id": "alex-sagemaker-role",
+            "inline_policy": [],
+            "managed_policy_arns": [
+              "arn:aws:iam::aws:policy/AmazonBedrockFullAccess",
+              "arn:aws:iam::aws:policy/AmazonSageMakerFullAccess",
+              "arn:aws:iam::aws:policy/CloudWatchEventsFullAccess"
+            ],
+            "max_session_duration": 3600,
+            "name": "alex-sagemaker-role",
+            "name_prefix": "",
+            "path": "/",
+            "permissions_boundary": "",
+            "tags": {
+              "Project": "alex"
+            },
+            "tags_all": {
+              "Project": "alex"
+            },
+            "unique_id": "AROAVRUVQESARZVQFDTEY"
+          },
+          "sensitive_attributes": [],
+          "identity_schema_version": 0,
+          "private": "bnVsbA=="
+        }
+      ]
+    },
+    {
+      "mode": "managed",
+      "type": "aws_sagemaker_model",
+      "name": "embedding_model",
+      "provider": "provider[\"registry.terraform.io/hashicorp/aws\"]",
+      "instances": [
+        {
+          "schema_version": 0,
+          "attributes": {
+            "arn": "arn:aws:sagemaker:us-east-1:381491881089:model/alex-embedding-model",
+            "container": [],
+            "enable_network_isolation": false,
+            "execution_role_arn": "arn:aws:iam::381491881089:role/alex-sagemaker-role",
+            "id": "alex-embedding-model",
+            "inference_execution_config": [],
+            "name": "alex-embedding-model",
+            "primary_container": [
+              {
+                "container_hostname": "",
+                "environment": {
+                  "HF_MODEL_ID": "sentence-transformers/all-MiniLM-L6-v2",
+                  "HF_TASK": "feature-extraction"
+                },
+                "image": "763104351884.dkr.ecr.us-east-1.amazonaws.com/huggingface-pytorch-inference:2.1.0-transformers4.37.0-cpu-py310-ubuntu22.04",
+                "image_config": [],
+                "inference_specification_name": "",
+                "mode": "SingleModel",
+                "model_data_source": [],
+                "model_data_url": "",
+                "model_package_name": "",
+                "multi_model_config": []
+              }
+            ],
+            "tags": {
+              "Project": "alex"
+            },
+            "tags_all": {
+              "Project": "alex"
+            },
+            "vpc_config": []
+          },
+          "sensitive_attributes": [],
+          "identity_schema_version": 0,
+          "private": "bnVsbA==",
+          "dependencies": [
+            "aws_iam_role.sagemaker_role"
+          ]
+        }
+      ]
+    }
+  ],
+  "check_results": null
+}

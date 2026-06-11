@@ -4,25 +4,32 @@ Guide 8: Added CloudWatch metrics for observability
 """
 import os
 import time
+import json
 import logging
 import boto3
 from datetime import datetime, UTC
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import StreamingResponse
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
 from agents import Agent, Runner, trace
 from agents.extensions.models.litellm_model import LitellmModel
-from fastapi.middleware.cors import CORSMiddleware
 import asyncio
+
 logging.getLogger("LiteLLM").setLevel(logging.CRITICAL)
 
 from prompts import get_agent_instructions, get_deep_research_instructions, DEFAULT_RESEARCH_PROMPT
 from mcp_servers import create_playwright_mcp_server
 from tools import ingest_financial_document, get_stock_data, get_sec_filings
-GUARDRAIL_ID      = os.getenv("BEDROCK_GUARDRAIL_ID", "eea439luokx8")
+
+GUARDRAIL_ID      = os.getenv("BEDROCK_GUARDRAIL_ID",      "eea439luokx8")
 GUARDRAIL_VERSION = os.getenv("BEDROCK_GUARDRAIL_VERSION", "1")
+CLUSTER_ARN       = os.getenv("DB_CLUSTER_ARN",            "")
+SECRET_ARN        = os.getenv("DB_SECRET_ARN",             "")
+DB_NAME           = os.getenv("DB_NAME",                   "alex_db")
 
 load_dotenv(override=True)
 
@@ -30,10 +37,10 @@ app = FastAPI(title="Alex Researcher Service")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins     = ["*"],
+    allow_credentials = True,
+    allow_methods     = ["*"],
+    allow_headers     = ["*"],
 )
 
 logger     = logging.getLogger(__name__)
@@ -44,35 +51,43 @@ MODEL  = "bedrock/us.amazon.nova-pro-v1:0"
 
 
 # ============================================
-# CloudWatch Metrics
-# Why: Every request emits business metrics
-#      so we can monitor quality over time
+# Aurora Warm-up Ping
+# Prevents 30s cold start by pinging every 4 mins
 # ============================================
+@app.on_event("startup")
+async def start_aurora_ping():
+    async def ping_aurora():
+        while True:
+            await asyncio.sleep(240)  # 4 minutes
+            try:
+                if CLUSTER_ARN and SECRET_ARN:
+                    rds = boto3.client('rds-data', region_name=REGION)
+                    rds.execute_statement(
+                        resourceArn = CLUSTER_ARN,
+                        secretArn   = SECRET_ARN,
+                        database    = DB_NAME,
+                        sql         = "SELECT 1"
+                    )
+                    print("Aurora ping successful")
+            except Exception as e:
+                print(f"Aurora ping failed (ok if not configured): {e}")
+    asyncio.create_task(ping_aurora())
 
+
+# ============================================
+# CloudWatch Metrics
+# ============================================
 def emit_metric(
     name:       str,
     value:      float,
-    unit:       str = 'Count',
+    unit:       str  = 'Count',
     dimensions: dict = None
 ):
-    """
-    Emit custom metric to CloudWatch.
-
-    Why custom metrics vs default AWS metrics:
-      AWS auto-tracks CPU, memory, invocations
-      We need BUSINESS metrics:
-        ResearchQueries     → how many per hour
-        ResearchLatency     → how fast is Alex?
-        ResearchSuccess     → what % succeed?
-        ResearchMode        → fast vs deep usage
-        IngestSuccess       → knowledge base growth
-    """
     try:
         dims = [{'Name': 'Service', 'Value': 'alex-researcher'}]
         if dimensions:
             for k, v in dimensions.items():
                 dims.append({'Name': k, 'Value': str(v)})
-
         cloudwatch.put_metric_data(
             Namespace  = 'AlexAI',
             MetricData = [{
@@ -93,62 +108,60 @@ class ResearchRequest(BaseModel):
 
 
 # ============================================
-# Data Agent — Fast Research
-# Why: No MCP servers = under Bedrock tool limit
-#      Handles 95% of user queries
+# Smart Guardrail Decision
+# Two-layer check:
+#   Layer 1: Harmful intent → always block
+#   Layer 2: Financial content → always allow
+#   Layer 3: Everything else → apply guardrail
 # ============================================
+def should_apply_guardrail(query: str, response: str) -> bool:
+    query_lower    = query.lower()
+    response_lower = response.lower()
 
-async def run_data_agent(topic: str) -> str:
-    """
-    Fast research agent using API tools only.
-    No Playwright = no Bedrock tool count issues.
-    """
-    os.environ["AWS_REGION_NAME"]    = REGION
-    os.environ["AWS_REGION"]         = REGION
-    os.environ["AWS_DEFAULT_REGION"] = REGION
+    # Layer 1 — Harmful intent always blocked
+    harmful_patterns = [
+        'manipulate', 'pump and dump', 'insider tip',
+        'guaranteed return', 'get rich quick',
+        'risk free', 'all my savings',
+        'launder', 'fraud', 'illegal',
+        'front run', 'short squeeze scheme',
+        'how to cheat', 'avoid taxes illegally'
+    ]
+    if any(p in query_lower for p in harmful_patterns):
+        print(f"Guardrail: harmful intent detected in query")
+        return True
 
-    model = LitellmModel(model=MODEL)
+    # Layer 2 — Legitimate financial content → skip guardrail
+    financial_signals = [
+        '$', 'price', 'market cap', 'revenue',
+        'earnings', 'analyst', 'p/e', 'ratio',
+        'stock', 'shares', 'quarter', 'fiscal',
+        'guidance', 'sec', 'filing', '%', 'buy',
+        'sell', 'hold', 'target', 'valuation'
+    ]
+    signals_found = sum(
+        1 for s in financial_signals
+        if s in response_lower
+    )
+    print(f"Guardrail: financial signals found = {signals_found}")
 
-    with trace("Alex-Data-Agent"):
-        agent = Agent(
-            name         = "Alex Data Researcher",
-            instructions = get_agent_instructions(),
-            model        = model,
-            tools        = [
-                get_stock_data,
-                ingest_financial_document,
-            ],
-            mcp_servers = [],
-        )
+    if signals_found >= 3:
+        print(f"Guardrail: skipping — legitimate financial content")
+        return False
 
-        result = await Runner.run(
-            agent,
-            input     = f"Research this investment topic: {topic}",
-            max_turns = 25,
-        )
+    # Layer 3 — Off topic → apply guardrail
+    print(f"Guardrail: applying — insufficient financial signals")
+    return True
 
-    return result.final_output
 
+# ============================================
+# Guardrail Application
+# ============================================
 async def apply_guardrail(text: str) -> tuple[str, bool]:
-    """
-    Apply Bedrock Guardrail to agent output.
-    
-    Why post-processing approach:
-      OpenAI Agents SDK doesn't support guardrail
-      config natively. ApplyGuardrail API works
-      independently of any agent framework.
-    
-    Returns:
-      (filtered_text, was_blocked)
-    """
     try:
         loop    = asyncio.get_event_loop()
-        bedrock = boto3.client(
-            'bedrock-runtime',
-            region_name=REGION
-        )
+        bedrock = boto3.client('bedrock-runtime', region_name=REGION)
 
-        # Run in executor since boto3 is synchronous
         response = await loop.run_in_executor(
             None,
             lambda: bedrock.apply_guardrail(
@@ -160,8 +173,7 @@ async def apply_guardrail(text: str) -> tuple[str, bool]:
         )
 
         if response['action'] == 'GUARDRAIL_INTERVENED':
-            print(f"Guardrail blocked response")
-            # Emit metric for monitoring
+            print("Guardrail blocked response")
             emit_metric('GuardrailBlock', 1)
             return (
                 "I can only help with financial research topics. "
@@ -169,27 +181,45 @@ async def apply_guardrail(text: str) -> tuple[str, bool]:
                 True
             )
 
-        print(f"Guardrail passed")
+        print("Guardrail passed")
         return (text, False)
 
     except Exception as e:
-        # Fail open — if guardrail errors return original
-        # Why: Better to show unfiltered than break the app
         print(f"Guardrail error (failing open): {e}")
         return (text, False)
 
-# ============================================
-# Deep Agent — SEC EDGAR Research
-# Why: Playwright for documents no API provides
-#      Fewer function tools to avoid tool limit
-# ============================================
 
+# ============================================
+# Fast Research Agent
+# ============================================
+async def run_data_agent(topic: str) -> str:
+    os.environ["AWS_REGION_NAME"]    = REGION
+    os.environ["AWS_REGION"]         = REGION
+    os.environ["AWS_DEFAULT_REGION"] = REGION
+
+    model = LitellmModel(model=MODEL)
+
+    with trace("Alex-Data-Agent"):
+        agent = Agent(
+            name         = "Alex Data Researcher",
+            instructions = get_agent_instructions(),
+            model        = model,
+            tools        = [get_stock_data, ingest_financial_document],
+            mcp_servers  = [],
+        )
+        result = await Runner.run(
+            agent,
+            input     = f"Research this investment topic: {topic}",
+            max_turns = 25,
+        )
+
+    return result.final_output
+
+
+# ============================================
+# Deep Research Agent
+# ============================================
 async def run_deep_agent(topic: str) -> str:
-    """
-    Deep research agent with Playwright MCP.
-    Used for SEC filings, insider trading,
-    earnings transcripts.
-    """
     os.environ["AWS_REGION_NAME"]    = REGION
     os.environ["AWS_REGION"]         = REGION
     os.environ["AWS_DEFAULT_REGION"] = REGION
@@ -200,18 +230,13 @@ async def run_deep_agent(topic: str) -> str:
         async with create_playwright_mcp_server(
             timeout_seconds=120
         ) as playwright_mcp:
-
             agent = Agent(
                 name         = "Alex Deep Researcher",
                 instructions = get_deep_research_instructions(),
                 model        = model,
-                tools        = [
-                    ingest_financial_document,
-                    get_sec_filings,
-                ],
-                mcp_servers = [playwright_mcp],
+                tools        = [ingest_financial_document, get_sec_filings],
+                mcp_servers  = [playwright_mcp],
             )
-
             result = await Runner.run(
                 agent,
                 input     = f"Deep research: {topic}",
@@ -224,7 +249,6 @@ async def run_deep_agent(topic: str) -> str:
 # ============================================
 # Endpoints
 # ============================================
-
 @app.get("/")
 async def root():
     return {
@@ -261,8 +285,15 @@ async def research(request: ResearchRequest):
     try:
         response = await run_data_agent(topic)
 
-        # Apply guardrail post-processing
-        filtered_response, was_blocked = await apply_guardrail(response)
+        print(f"Response length: {len(response)}")
+        print(f"Response preview: {response[:200]}")
+
+        if should_apply_guardrail(topic, response):
+            filtered_response, was_blocked = await apply_guardrail(response)
+            if was_blocked:
+                emit_metric('GuardrailBlock', 1, dimensions={'Mode': 'fast'})
+        else:
+            filtered_response = response
 
         latency = time.time() - start_time
         emit_metric('ResearchLatency', latency, 'Seconds', {'Mode': 'fast'})
@@ -290,22 +321,18 @@ async def research_deep(request: ResearchRequest):
 
     try:
         response = await run_deep_agent(topic)
-        latency  = time.time() - start_time
 
-        # Only apply guardrail to OUTPUT not input
-        # Deep research = legitimate SEC queries
-        # Skip guardrail for SEC/filing queries
-        sec_keywords = ['10-k', '10-q', '8-k', 'sec', 'filing', 
-                        'edgar', 'insider', 'earnings', 'risk factor']
-        is_sec_query = any(kw in topic.lower() for kw in sec_keywords)
+        print(f"Deep response length: {len(response)}")
+        print(f"Deep response preview: {response[:200]}")
 
-        if not is_sec_query:
+        if should_apply_guardrail(topic, response):
             filtered_response, was_blocked = await apply_guardrail(response)
             if was_blocked:
                 emit_metric('GuardrailBlock', 1, dimensions={'Mode': 'deep'})
         else:
             filtered_response = response
 
+        latency = time.time() - start_time
         emit_metric('ResearchLatency', latency, 'Seconds', {'Mode': 'deep'})
         emit_metric('ResearchSuccess', 1, dimensions={'Mode': 'deep'})
 
@@ -319,16 +346,99 @@ async def research_deep(request: ResearchRequest):
         logger.error(f"Deep research error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
+@app.post("/research/stream")
+async def research_stream(request: ResearchRequest):
+    """
+    Streaming research endpoint using SSE.
+    Streams tokens as they generate.
+    ALB timeout set to 300s to support long streams.
+    """
+    start_time = time.time()
+    topic      = request.topic or "trending financial topics today"
+
+    emit_metric('ResearchQuery', 1, dimensions={'Mode': 'stream'})
+
+    async def generate():
+        try:
+            yield f"data: {json.dumps({'type': 'status', 'content': 'Getting stock data...'})}\n\n"
+            await asyncio.sleep(0.1)
+
+            os.environ["AWS_REGION_NAME"]    = REGION
+            os.environ["AWS_REGION"]         = REGION
+            os.environ["AWS_DEFAULT_REGION"] = REGION
+
+            model = LitellmModel(model=MODEL)
+
+            yield f"data: {json.dumps({'type': 'status', 'content': 'Fetching news headlines...'})}\n\n"
+
+            full_response = ""
+
+            with trace("Alex-Stream-Agent"):
+                agent = Agent(
+                    name         = "Alex Data Researcher",
+                    instructions = get_agent_instructions(),
+                    model        = model,
+                    tools        = [get_stock_data, ingest_financial_document],
+                    mcp_servers  = [],
+                )
+
+                yield f"data: {json.dumps({'type': 'status', 'content': 'Generating analysis...'})}\n\n"
+
+                result = await Runner.run(
+                    agent,
+                    input     = f"Research this investment topic: {topic}",
+                    max_turns = 25,
+                )
+                full_response = result.final_output
+
+            # Debug logging
+            print(f"Stream response length: {len(full_response)}")
+            print(f"Stream response preview: {full_response[:300]}")
+
+            # Smart guardrail — always initialized before use
+            filtered_response = full_response  # default
+            if should_apply_guardrail(topic, full_response):
+                filtered_response, was_blocked = await apply_guardrail(full_response)
+                if was_blocked:
+                    emit_metric('GuardrailBlock', 1, dimensions={'Mode': 'stream'})
+            else:
+                filtered_response = full_response
+
+            # Stream word by word
+            words = filtered_response.split(' ')
+            for i, word in enumerate(words):
+                yield f"data: {json.dumps({'type': 'token', 'content': word + ' '})}\n\n"
+                if i % 10 == 0:
+                    await asyncio.sleep(0.01)
+
+            latency = time.time() - start_time
+            emit_metric('ResearchLatency', latency, 'Seconds', {'Mode': 'stream'})
+            emit_metric('ResearchSuccess', 1, dimensions={'Mode': 'stream'})
+
+            yield f"data: {json.dumps({'type': 'done', 'latency': round(latency, 1)})}\n\n"
+
+        except Exception as e:
+            logger.error(f"Stream error: {e}")
+            emit_metric('ResearchError', 1, dimensions={'Mode': 'stream'})
+            yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
+
+    return StreamingResponse(
+        generate(),
+        media_type = "text/event-stream",
+        headers    = {
+            "Cache-Control":               "no-cache",
+            "Connection":                  "keep-alive",
+            "Access-Control-Allow-Origin": "*",
+        }
+    )
+
+
 @app.get("/research/auto")
 async def research_auto():
-    """
-    Auto research — called by EventBridge scheduler.
-    """
     emit_metric('AutoResearchTrigger', 1)
     try:
-        response = await run_data_agent(
-            "trending financial topics today"
-        )
+        response = await run_data_agent("trending financial topics today")
         emit_metric('AutoResearchSuccess', 1)
         return {
             "status":    "success",

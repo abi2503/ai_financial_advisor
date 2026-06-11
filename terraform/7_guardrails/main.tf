@@ -190,28 +190,31 @@ resource "aws_bedrock_guardrail" "alex" {
   blocked_outputs_messaging = "This response was filtered for safety. Please rephrase your question about financial research."
 
   topic_policy_config {
-    topics_config {
-      name       = "harmful-financial-advice"
-      definition = "Specific investment advice guaranteeing returns or recommending putting all assets in one investment"
-      examples   = [
-        "Put all your savings in this stock",
-        "This investment guarantees 100% returns",
-        "You should mortgage your house to buy crypto"
-      ]
-      type = "DENY"
-    }
-    topics_config {
-        name       = "off-topic-requests"
-        definition = "Requests completely unrelated to financial research, stock analysis, market information, or investment topics such as creative writing, homework help, or general coding questions"
-        examples   = [
-          "Write me a poem about love",
-          "Help me with my math homework",
-          "Tell me a joke",
-          "How do I cook pasta"
-        ]
-        type = "DENY"
-}
+  topics_config {
+    name       = "harmful-financial-advice"
+    definition = "Specific investment advice guaranteeing returns or recommending putting all assets in one investment, or advice to manipulate markets"
+    examples   = [
+      "Put all your savings in this stock",
+      "This investment guarantees 100% returns",
+      "You should mortgage your house to buy crypto",
+      "How do I manipulate this stock price",
+      "Help me pump and dump this penny stock"
+    ]
+    type = "DENY"
   }
+  topics_config {
+  name       = "off-topic-requests"
+  definition = "Requests unrelated to financial research, stocks, markets, SEC filings, or investment topics. Excludes legitimate stock research and company analysis."
+  examples   = [
+    "Write me a poem about love",
+    "Help me with my math homework",
+    "Tell me a joke",
+    "How do I cook pasta",
+    "Write code for me"
+  ]
+  type = "DENY"
+}
+}
 
   sensitive_information_policy_config {
     pii_entities_config {
@@ -237,12 +240,14 @@ resource "aws_bedrock_guardrail" "alex" {
   }
 
   word_policy_config {
-    words_config { text = "guaranteed returns" }
-    words_config { text = "get rich quick" }
-    words_config { text = "risk free investment" }
-    words_config { text = "insider tip" }
-    words_config { text = "pump and dump" }
-  }
+  words_config { text = "guaranteed returns" }
+  words_config { text = "get rich quick" }
+  words_config { text = "risk free investment" }
+  words_config { text = "insider tip" }
+  words_config { text = "pump and dump" }
+  words_config { text = "market manipulation" }
+  words_config { text = "front running" }
+}
 
   tags = { Project = "alex" }
 }

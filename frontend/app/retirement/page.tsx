@@ -19,6 +19,14 @@ interface RetirementResult {
   gapPct:          number
   allocation:      { stocks: number, bonds: number, cash: number, description: string }
   aiAdvice:        string
+  inputs?: {
+    currentAge:          number
+    retirementAge:       number
+    currentSavings:      number
+    monthlyContribution: number
+    expectedReturn:      number
+    riskTolerance:       string
+  }
 }
 
 const ALLOCATION_COLORS = ['#3b82f6', '#8b5cf6', '#6b7280']

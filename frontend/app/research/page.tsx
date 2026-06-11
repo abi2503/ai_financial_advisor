@@ -2,32 +2,88 @@
 import { useState, useRef, useEffect, Suspense } from 'react'
 import { useSearchParams } from 'next/navigation'
 import Navbar from '@/components/Navbar'
-import { Brain, Send, Loader2, User, Zap, Search } from 'lucide-react'
-import axios from 'axios'
+import { Brain, Send, Loader2, User, Zap, Search, GitBranch } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
 interface Message {
-  role:    'user' | 'alex'
-  content: string
-  time:    string
-  mode?:   'fast' | 'deep'
+  role:      'user' | 'alex'
+  content:   string
+  time:      string
+  mode?:     'fast' | 'deep' | 'multi'
+  tasks?:    string[]
+  streaming? : boolean
+}
+
+// Complex query detection (mirrors backend)
+const COMPLEX_PATTERNS = [
+  'compare', ' vs ', 'versus', 'should i',
+  'or ', 'both', 'which is better',
+  'difference between', 'contrast'
+]
+
+function isComplexQuery(topic: string): boolean {
+  const lower       = topic.toLowerCase()
+  const tickerMatch = topic.match(/\b[A-Z]{2,5}\b/g) || []
+  const hasMultiple = tickerMatch.length >= 2
+  const hasPattern  = COMPLEX_PATTERNS.some(p => lower.includes(p))
+  return hasMultiple && hasPattern
+}
+
+const markdownComponents = {
+  h1:         ({children}: any) => <h1 className="text-lg font-bold text-white mb-2 mt-1">{children}</h1>,
+  h2:         ({children}: any) => <h2 className="text-base font-bold text-white mb-2 mt-3 pb-1 border-b border-gray-700">{children}</h2>,
+  h3:         ({children}: any) => <h3 className="text-sm font-semibold text-blue-400 mb-1 mt-2">{children}</h3>,
+  p:          ({children}: any) => <p className="mb-2 text-gray-200 leading-relaxed">{children}</p>,
+  ul:         ({children}: any) => <ul className="mb-3 space-y-1.5">{children}</ul>,
+  ol:         ({children}: any) => <ol className="mb-3 space-y-1.5 list-decimal list-inside">{children}</ol>,
+  li:         ({children}: any) => (
+    <li className="flex gap-2 text-gray-300 text-sm">
+      <span className="text-blue-400 mt-0.5 flex-shrink-0">•</span>
+      <span>{children}</span>
+    </li>
+  ),
+  strong:     ({children}: any) => <strong className="text-white font-semibold">{children}</strong>,
+  em:         ({children}: any) => <em className="text-gray-300 italic">{children}</em>,
+  hr:         () => <hr className="border-gray-700 my-4" />,
+  code:       ({children}: any) => <code className="bg-gray-800 text-blue-300 px-1.5 py-0.5 rounded text-xs font-mono">{children}</code>,
+  blockquote: ({children}: any) => (
+    <blockquote className="border-l-2 border-blue-400 pl-3 text-gray-400 italic my-3 bg-blue-500/5 py-2 rounded-r">
+      {children}
+    </blockquote>
+  ),
+  table: ({children}: any) => (
+    <div className="overflow-x-auto my-3 rounded-lg border border-gray-700">
+      <table className="w-full text-sm border-collapse">{children}</table>
+    </div>
+  ),
+  thead: ({children}: any) => <thead className="bg-gray-800/80">{children}</thead>,
+  tbody: ({children}: any) => <tbody className="divide-y divide-gray-800">{children}</tbody>,
+  tr:    ({children}: any) => <tr className="hover:bg-gray-800/40 transition">{children}</tr>,
+  th:    ({children}: any) => <th className="px-4 py-2.5 text-left text-xs font-semibold text-gray-400 uppercase tracking-wider">{children}</th>,
+  td:    ({children}: any) => <td className="px-4 py-2.5 text-gray-200">{children}</td>,
+  a:     ({children, href}: any) => (
+    <a href={href} target="_blank" rel="noopener noreferrer"
+       className="text-blue-400 hover:text-blue-300 underline">
+      {children}
+    </a>
+  ),
 }
 
 function ResearchPage() {
   const searchParams = useSearchParams()
   const initialQ     = searchParams.get('q') || ''
 
-  const [messages, setMessages] = useState<Message[]>([{
+  const [messages,   setMessages]   = useState<Message[]>([{
     role:    'alex',
-    content: 'Hello! I\'m Alex, your AI financial research assistant.\n\n⚡ **Fast Mode** — Price, news, and analysis in 45 seconds.\n\n🔍 **Deep Mode** — SEC filings, insider trading, earnings transcripts in 3-4 minutes.\n\nAsk me anything about stocks, markets, or investment topics.',
+    content: 'Hello! I\'m Alex, your AI financial research assistant.\n\n⚡ **Fast Mode** — Price, news, and analysis in 45 seconds.\n\n🔍 **Deep Mode** — SEC filings, insider trading, analyst ratings in 3-4 minutes.\n\n🔀 **Multi-Agent** — Auto-detected for complex queries like "Compare NVDA vs AMD".\n\nAsk me anything about stocks, markets, or investment topics.',
     time:    ''
   }])
-
-  const [input,    setInput]    = useState(initialQ)
-  const [loading,  setLoading]  = useState(false)
-  const [deepMode, setDeepMode] = useState(false)
-  const [mounted,  setMounted]  = useState(false)
+  const [input,      setInput]      = useState(initialQ)
+  const [loading,    setLoading]    = useState(false)
+  const [deepMode,   setDeepMode]   = useState(false)
+  const [status,     setStatus]     = useState('')
+  const [mounted,    setMounted]    = useState(false)
   const bottomRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => { setMounted(true) }, [])
@@ -42,6 +98,151 @@ function ResearchPage() {
     return mounted ? new Date().toLocaleTimeString() : ''
   }
 
+  // ============================================
+  // Streaming research via SSE
+  // ============================================
+  async function handleStreamResearch(question: string) {
+    setStatus('Connecting to Alex...')
+
+    const response = await fetch('/api/research/stream', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ topic: question }),
+    })
+
+    if (!response.ok || !response.body) {
+      throw new Error('Stream unavailable')
+    }
+
+    const reader  = response.body.getReader()
+    const decoder = new TextDecoder()
+    let   buffer  = ''
+    let   content = ''
+
+    // Add empty streaming message
+    setMessages(prev => [...prev, {
+      role:      'alex',
+      content:   '',
+      time:      getTime(),
+      mode:      'fast',
+      streaming: true
+    }])
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop() || ''
+
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue
+        try {
+          const data = JSON.parse(line.slice(6))
+
+          if (data.type === 'status') {
+            setStatus(data.content)
+          } else if (data.type === 'token') {
+            content += data.content
+            // Update last message with streamed content
+            setMessages(prev => [
+              ...prev.slice(0, -1),
+              {
+                role:      'alex',
+                content,
+                time:      getTime(),
+                mode:      'fast',
+                streaming: true
+              }
+            ])
+          } else if (data.type === 'done') {
+            setStatus('')
+            // Mark streaming complete
+            setMessages(prev => [
+              ...prev.slice(0, -1),
+              {
+                role:      'alex',
+                content,
+                time:      getTime(),
+                mode:      'fast',
+                streaming: false
+              }
+            ])
+          } else if (data.type === 'error') {
+            throw new Error(data.content)
+          }
+        } catch (e) {
+          // Skip malformed SSE lines
+        }
+      }
+    }
+
+    return content
+  }
+
+  // ============================================
+  // Multi-agent research via Planner
+  // ============================================
+  async function handleMultiAgentResearch(question: string) {
+    setStatus('Decomposing query into research tasks...')
+
+    setMessages(prev => [...prev, {
+      role:    'alex',
+      content: '🔀 Complex query detected — activating multi-agent research pipeline...',
+      time:    getTime(),
+      mode:    'multi'
+    }])
+
+    const response = await fetch('/api/research', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ topic: question }),
+    })
+
+    const data = await response.json()
+
+    if (data.mode === 'multi-agent' && data.tasks) {
+      setStatus(`Researching ${data.tasks.length} topics in parallel...`)
+
+      // Show task breakdown
+      const taskList = data.tasks
+        .map((t: string, i: number) => `${i + 1}. ${t}`)
+        .join('\n')
+
+      setMessages(prev => [
+        ...prev.slice(0, -1),
+        {
+          role:    'alex',
+          content: `🔀 **Multi-Agent Research** — ${data.tasks.length} parallel tasks:\n\n${taskList}\n\n*Synthesizing results...*`,
+          time:    getTime(),
+          mode:    'multi',
+          tasks:   data.tasks
+        }
+      ])
+
+      // Small delay then show result
+      await new Promise(r => setTimeout(r, 500))
+    }
+
+    setStatus('')
+    setMessages(prev => [
+      ...prev.slice(0, -1),
+      {
+        role:    'alex',
+        content: data.result || 'Research complete.',
+        time:    getTime(),
+        mode:    'multi',
+        tasks:   data.tasks
+      }
+    ])
+
+    return data.result
+  }
+
+  // ============================================
+  // Main submit handler
+  // ============================================
   async function handleSubmit(
     e: React.FormEvent | null,
     overrideInput?: string
@@ -50,7 +251,8 @@ function ResearchPage() {
     const question = overrideInput || input
     if (!question.trim() || loading) return
 
-    const mode = deepMode ? 'deep' : 'fast'
+    const complex = isComplexQuery(question)
+    const mode    = deepMode ? 'deep' : complex ? 'multi' : 'fast'
 
     setMessages(prev => [...prev, {
       role: 'user', content: question, time: getTime(), mode
@@ -58,33 +260,65 @@ function ResearchPage() {
     setInput('')
     setLoading(true)
 
-    setMessages(prev => [...prev, {
-      role:    'alex',
-      content: deepMode
-        ? '⏳ Alex is reading SEC filings... (3-4 minutes)'
-        : '⏳ Alex is researching... (30-60 seconds)',
-      time: getTime(),
-      mode
-    }])
-
     try {
-      const endpoint = deepMode ? '/api/research/deep' : '/api/research'
-      const response = await axios.post(
-        endpoint,
-        { topic: question },
-        { timeout: 300000 }
-      )
+      if (complex && !deepMode) {
+        // Multi-agent for complex queries
+        await handleMultiAgentResearch(question)
 
-      setMessages(prev => [
-        ...prev.slice(0, -1),
-        {
-          role:    'alex',
-          content: response.data.result || 'Research complete.',
-          time:    getTime(),
-          mode
+      } else if (!deepMode) {
+        // Streaming for fast mode
+        try {
+          await handleStreamResearch(question)
+        } catch (streamErr) {
+          // Fallback to non-streaming
+          console.log('Stream failed, falling back to standard')
+          setStatus('Researching...')
+          const res  = await fetch('/api/research', {
+            method:  'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body:    JSON.stringify({ topic: question }),
+          })
+          const data = await res.json()
+          setMessages(prev => [...prev, {
+            role:    'alex',
+            content: data.result || 'Research complete.',
+            time:    getTime(),
+            mode:    'fast'
+          }])
         }
-      ])
+
+      } else {
+        // Deep mode — standard (no stream, longer wait)
+        setStatus('Reading SEC EDGAR filings...')
+        setMessages(prev => [...prev, {
+          role:    'alex',
+          content: '⏳ Alex is analyzing SEC filings, analyst ratings, and options flow... (3-4 minutes)',
+          time:    getTime(),
+          mode:    'deep'
+        }])
+
+        const res  = await fetch('/api/research/deep', {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify({ topic: question }),
+          signal:  AbortSignal.timeout(300000)
+        })
+        const data = await res.json()
+
+        setMessages(prev => [
+          ...prev.slice(0, -1),
+          {
+            role:    'alex',
+            content: data.result || 'Research complete.',
+            time:    getTime(),
+            mode:    'deep'
+          }
+        ])
+        setStatus('')
+      }
+
     } catch (error: any) {
+      setStatus('')
       setMessages(prev => [
         ...prev.slice(0, -1),
         {
@@ -98,41 +332,8 @@ function ResearchPage() {
       ])
     } finally {
       setLoading(false)
+      setStatus('')
     }
-  }
-
-  const markdownComponents = {
-    h1: ({children}: any) => <h1 className="text-lg font-bold text-white mb-2 mt-1">{children}</h1>,
-    h2: ({children}: any) => <h2 className="text-base font-bold text-white mb-2 mt-3 pb-1 border-b border-gray-700">{children}</h2>,
-    h3: ({children}: any) => <h3 className="text-sm font-semibold text-blue-400 mb-1 mt-2">{children}</h3>,
-    p:  ({children}: any) => <p className="mb-2 text-gray-200 leading-relaxed">{children}</p>,
-    ul: ({children}: any) => <ul className="mb-3 space-y-1.5">{children}</ul>,
-    ol: ({children}: any) => <ol className="mb-3 space-y-1.5 list-decimal list-inside">{children}</ol>,
-    li: ({children}: any) => (
-      <li className="flex gap-2 text-gray-300 text-sm">
-        <span className="text-blue-400 mt-0.5 flex-shrink-0">•</span>
-        <span>{children}</span>
-      </li>
-    ),
-    strong:     ({children}: any) => <strong className="text-white font-semibold">{children}</strong>,
-    em:         ({children}: any) => <em className="text-gray-300 italic">{children}</em>,
-    hr:         () => <hr className="border-gray-700 my-4" />,
-    code:       ({children}: any) => <code className="bg-gray-800 text-blue-300 px-1.5 py-0.5 rounded text-xs font-mono">{children}</code>,
-    blockquote: ({children}: any) => (
-      <blockquote className="border-l-2 border-blue-400 pl-3 text-gray-400 italic my-3 bg-blue-500/5 py-2 rounded-r">
-        {children}
-      </blockquote>
-    ),
-    table: ({children}: any) => (
-      <div className="overflow-x-auto my-3 rounded-lg border border-gray-700">
-        <table className="w-full text-sm border-collapse">{children}</table>
-      </div>
-    ),
-    thead: ({children}: any) => <thead className="bg-gray-800/80">{children}</thead>,
-    tbody: ({children}: any) => <tbody className="divide-y divide-gray-800">{children}</tbody>,
-    tr:    ({children}: any) => <tr className="hover:bg-gray-800/40 transition">{children}</tr>,
-    th:    ({children}: any) => <th className="px-4 py-2.5 text-left text-xs font-semibold text-gray-400 uppercase tracking-wider">{children}</th>,
-    td:    ({children}: any) => <td className="px-4 py-2.5 text-gray-200">{children}</td>,
   }
 
   return (
@@ -140,18 +341,24 @@ function ResearchPage() {
       <Navbar />
       <main className="flex-1 max-w-4xl mx-auto w-full px-6 py-6 flex flex-col">
 
+        {/* Header */}
         <div className="flex items-center gap-2 mb-4">
           <Brain className="text-blue-400" size={20} />
           <h1 className="font-semibold text-white">Research Chat</h1>
-          <span className="ml-auto text-xs text-gray-500">Powered by AWS Bedrock Nova Pro</span>
+          <span className="ml-auto text-xs text-gray-500">
+            Powered by AWS Bedrock Nova Pro
+          </span>
         </div>
 
+        {/* Mode selector */}
         <div className="flex items-center gap-3 mb-4 p-3 bg-gray-900 border border-gray-800 rounded-xl">
           <span className="text-xs text-gray-500 font-medium">Mode:</span>
           <button
             onClick={() => setDeepMode(false)}
             className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition ${
-              !deepMode ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/20' : 'bg-gray-800 text-gray-400 hover:text-white'
+              !deepMode
+                ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/20'
+                : 'bg-gray-800 text-gray-400 hover:text-white'
             }`}
           >
             <Zap size={12} /> Fast
@@ -159,28 +366,46 @@ function ResearchPage() {
           <button
             onClick={() => setDeepMode(true)}
             className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition ${
-              deepMode ? 'bg-purple-600 text-white shadow-lg shadow-purple-600/20' : 'bg-gray-800 text-gray-400 hover:text-white'
+              deepMode
+                ? 'bg-purple-600 text-white shadow-lg shadow-purple-600/20'
+                : 'bg-gray-800 text-gray-400 hover:text-white'
             }`}
           >
             <Search size={12} /> Deep
           </button>
+          <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-green-600/10 border border-green-600/20 text-green-400 text-xs">
+            <GitBranch size={12} />
+            Multi-Agent auto
+          </div>
           <span className="text-xs text-gray-600 ml-1">
-            {deepMode ? '🔍 SEC filings + insider trading (3-4 min)' : '⚡ Price + news + analysis (45 sec)'}
+            {deepMode
+              ? '🔍 SEC + analyst ratings + options flow (3-4 min)'
+              : '⚡ Price + news + analysis (45 sec) · 🔀 Auto multi-agent for comparisons'
+            }
           </span>
         </div>
 
+        {/* Status bar */}
+        {status && (
+          <div className="mb-3 px-4 py-2 bg-blue-500/10 border border-blue-500/20 rounded-lg flex items-center gap-2">
+            <Loader2 size={12} className="animate-spin text-blue-400" />
+            <span className="text-xs text-blue-400">{status}</span>
+          </div>
+        )}
+
+        {/* Suggestions */}
         {messages.length === 1 && (
           <div className="mb-4 grid grid-cols-2 gap-2">
             {(deepMode ? [
               'Analyze NVDA SEC 10-K for hidden risks',
               'Show AAPL insider trading activity',
-              'Find MSFT 8-K material events',
-              'TSLA insider trades last 90 days',
+              'MSFT analyst ratings and price targets',
+              'TSLA options flow signals today',
             ] : [
               'Should I buy NVDA before earnings?',
-              'What is happening with AI stocks today?',
-              'Compare NVDA vs AMD for next quarter',
+              'Compare NVDA vs AMD for AI chips',
               'How is Fed rate affecting tech stocks?',
+              'What is happening with AI stocks today?',
             ]).map((suggestion) => (
               <button
                 key={suggestion}
@@ -193,14 +418,22 @@ function ResearchPage() {
           </div>
         )}
 
+        {/* Messages */}
         <div className="flex-1 space-y-4 overflow-y-auto mb-4 min-h-0">
           {messages.map((msg, i) => (
-            <div key={i} className={`flex gap-3 ${msg.role === 'user' ? 'justify-end' : ''}`}>
+            <div
+              key={i}
+              className={`flex gap-3 ${msg.role === 'user' ? 'justify-end' : ''}`}
+            >
               {msg.role === 'alex' && (
                 <div className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 mt-1 ${
-                  msg.mode === 'deep' ? 'bg-purple-600' : 'bg-blue-600'
+                  msg.mode === 'deep'  ? 'bg-purple-600' :
+                  msg.mode === 'multi' ? 'bg-green-600'  : 'bg-blue-600'
                 }`}>
-                  <Brain size={16} className="text-white" />
+                  {msg.mode === 'multi'
+                    ? <GitBranch size={16} className="text-white" />
+                    : <Brain size={16} className="text-white" />
+                  }
                 </div>
               )}
 
@@ -209,23 +442,58 @@ function ResearchPage() {
                   ? 'bg-blue-600 rounded-2xl rounded-tr-sm'
                   : 'bg-gray-900 border border-gray-800 rounded-2xl rounded-tl-sm'
               }`}>
+                {/* Mode badge */}
                 {msg.role === 'alex' && msg.mode && i > 0 && (
-                  <div className="mb-3">
+                  <div className="mb-3 flex items-center gap-2">
                     <span className={`text-xs px-2 py-1 rounded-full font-medium ${
-                      msg.mode === 'deep' ? 'bg-purple-500/20 text-purple-400' : 'bg-blue-500/20 text-blue-400'
+                      msg.mode === 'deep'  ? 'bg-purple-500/20 text-purple-400' :
+                      msg.mode === 'multi' ? 'bg-green-500/20 text-green-400'   :
+                      'bg-blue-500/20 text-blue-400'
                     }`}>
-                      {msg.mode === 'deep' ? '🔍 Deep Research' : '⚡ Fast Research'}
+                      {msg.mode === 'deep'  ? '🔍 Deep Research'       :
+                       msg.mode === 'multi' ? '🔀 Multi-Agent Research' :
+                       '⚡ Fast Research'}
                     </span>
+                    {msg.streaming && (
+                      <span className="text-xs text-gray-500 flex items-center gap-1">
+                        <Loader2 size={10} className="animate-spin" />
+                        streaming
+                      </span>
+                    )}
                   </div>
                 )}
 
-                <div className={`text-sm leading-relaxed ${msg.role === 'user' ? 'text-white' : 'text-gray-200'}`}>
+                {/* Tasks breakdown for multi-agent */}
+                {msg.tasks && msg.tasks.length > 0 && (
+                  <div className="mb-3 p-2 bg-green-500/5 border border-green-500/10 rounded-lg">
+                    <div className="text-xs text-green-400 font-medium mb-1">
+                      Parallel research tasks:
+                    </div>
+                    {msg.tasks.map((task, ti) => (
+                      <div key={ti} className="text-xs text-gray-400">
+                        {ti + 1}. {task}
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Content */}
+                <div className={`text-sm leading-relaxed ${
+                  msg.role === 'user' ? 'text-white' : 'text-gray-200'
+                }`}>
                   {msg.role === 'user' ? (
                     <span>{msg.content}</span>
                   ) : (
-                    <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+                    <ReactMarkdown
+                      remarkPlugins={[remarkGfm]}
+                      components={markdownComponents}
+                    >
                       {msg.content}
                     </ReactMarkdown>
+                  )}
+                  {/* Streaming cursor */}
+                  {msg.streaming && (
+                    <span className="inline-block w-1 h-4 bg-blue-400 ml-0.5 animate-pulse" />
                   )}
                 </div>
 
@@ -242,7 +510,7 @@ function ResearchPage() {
             </div>
           ))}
 
-          {loading && (
+          {loading && !messages[messages.length - 1]?.streaming && (
             <div className="flex gap-3">
               <div className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 mt-1 ${
                 deepMode ? 'bg-purple-600' : 'bg-blue-600'
@@ -252,11 +520,11 @@ function ResearchPage() {
               <div className="bg-gray-900 border border-gray-800 rounded-2xl rounded-tl-sm p-4">
                 <div className="flex items-center gap-2 text-gray-400 text-sm">
                   <Loader2 size={14} className="animate-spin" />
-                  {deepMode ? 'Reading SEC EDGAR filings... (3-4 minutes)' : 'Researching markets... (30-60 seconds)'}
+                  {deepMode
+                    ? 'Reading SEC EDGAR filings... (3-4 minutes)'
+                    : 'Researching markets... (30-60 seconds)'
+                  }
                 </div>
-                {deepMode && (
-                  <div className="mt-1.5 text-xs text-gray-600">Browsing official SEC EDGAR documents</div>
-                )}
               </div>
             </div>
           )}
@@ -264,13 +532,14 @@ function ResearchPage() {
           <div ref={bottomRef} />
         </div>
 
+        {/* Input */}
         <form onSubmit={handleSubmit} className="flex gap-3">
           <input
             value={input}
             onChange={e => setInput(e.target.value)}
             placeholder={deepMode
-              ? 'Ask for SEC filing analysis, insider trades, 8-K events...'
-              : 'Ask about any stock, market trend, or investment topic...'
+              ? 'Ask for SEC filing analysis, insider trades...'
+              : 'Ask about any stock, market, or use "Compare X vs Y" for multi-agent...'
             }
             disabled={loading}
             className="flex-1 bg-gray-900 border border-gray-700 rounded-xl px-4 py-3 text-white text-sm placeholder-gray-500 focus:outline-none focus:border-blue-500 transition disabled:opacity-50"
@@ -282,14 +551,17 @@ function ResearchPage() {
               deepMode ? 'bg-purple-600 hover:bg-purple-500' : 'bg-blue-600 hover:bg-blue-500'
             }`}
           >
-            {loading ? <Loader2 size={16} className="animate-spin" /> : <Send size={16} />}
+            {loading
+              ? <Loader2 size={16} className="animate-spin" />
+              : <Send size={16} />
+            }
           </button>
         </form>
 
         <p className="text-xs text-gray-600 text-center mt-3">
           {deepMode
-            ? 'Deep mode reads official SEC EDGAR filings — allow 3-4 minutes'
-            : 'Fast mode uses live market data — results in 30-60 seconds'
+            ? 'Deep mode reads SEC EDGAR + analyst ratings — allow 3-4 minutes'
+            : 'Fast mode streams live market data · Multi-agent auto-activates for comparisons'
           }
         </p>
 
@@ -298,7 +570,6 @@ function ResearchPage() {
   )
 }
 
-// Suspense wrapper required for useSearchParams in Next.js production build
 export default function ResearchPageWrapper() {
   return (
     <Suspense fallback={

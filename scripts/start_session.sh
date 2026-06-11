@@ -25,7 +25,7 @@ else
 fi
 
 REGION=${DEFAULT_AWS_REGION:-us-east-1}
-
+sleep 30 # Wait for the SageMaker endpoint to be ready
 # ============================================
 # Step 1 — SageMaker Endpoint
 # ============================================
