@@ -16,7 +16,9 @@ const DB = {
   database:    process.env.DB_NAME || 'alex_db',
 }
 
-const RESULTS_QUEUE_URL = process.env.SQS_RESULTS_QUEUE_URL!
+const RESULTS_QUEUE_URL = 
+  process.env.SQS_FRONTEND_RESULTS_QUEUE_URL || 
+  process.env.SQS_RESULTS_QUEUE_URL!
 const PLANNER_FUNCTION  = process.env.PLANNER_FUNCTION || 'alex-planner'
 
 // ============================================
@@ -158,7 +160,7 @@ async function invokePlanner(
 async function pollForResults(
   taskCount:     number,
   correlationId: string,
-  timeoutMs:     number = 90000
+  timeoutMs:     number = 180000
 ): Promise<{ results: string[]; timedOut: boolean }> {
   const results:   string[] = []
   const startTime: number   = Date.now()

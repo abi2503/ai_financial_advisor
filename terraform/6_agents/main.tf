@@ -47,7 +47,13 @@ resource "aws_sqs_queue" "results_queue" {
 
   tags = { Project = var.project_name }
 }
+resource "aws_sqs_queue" "frontend_results_queue" {
+  name                       = "${var.project_name}-frontend-results"
+  visibility_timeout_seconds = 120
+  message_retention_seconds  = 300
 
+  tags = { Project = var.project_name }
+}
 # ============================================
 # IAM Role for Agent Lambdas
 # ============================================
@@ -92,10 +98,11 @@ resource "aws_iam_role_policy" "agent_policy" {
           "sqs:GetQueueAttributes"
         ]
         Resource = [
-          aws_sqs_queue.research_queue.arn,
-          aws_sqs_queue.results_queue.arn,
-          aws_sqs_queue.dlq.arn
-        ]
+  aws_sqs_queue.research_queue.arn,
+  aws_sqs_queue.results_queue.arn,
+  aws_sqs_queue.frontend_results_queue.arn,  # ← add this
+  aws_sqs_queue.dlq.arn
+]
       },
       {
         Effect = "Allow"
@@ -175,12 +182,14 @@ resource "aws_lambda_function" "reporter" {
 
   environment {
     variables = {
-      ALEX_API_ENDPOINT = var.alex_api_endpoint
-      ALEX_API_KEY      = var.alex_api_key
-      DB_CLUSTER_ARN    = var.db_cluster_arn
-      DB_SECRET_ARN     = var.db_secret_arn
-      DB_NAME           = var.db_name
-      AWS_REGION_NAME   = var.aws_region
+      ALEX_API_ENDPOINT          = var.alex_api_endpoint
+      ALEX_API_KEY               = var.alex_api_key
+      DB_CLUSTER_ARN             = var.db_cluster_arn
+      DB_SECRET_ARN              = var.db_secret_arn
+      DB_NAME                    = var.db_name
+      AWS_REGION_NAME            = var.aws_region
+      RESULTS_QUEUE_URL          = aws_sqs_queue.results_queue.url
+      FRONTEND_RESULTS_QUEUE_URL = aws_sqs_queue.frontend_results_queue.url
     }
   }
 
@@ -307,3 +316,5 @@ resource "aws_cloudwatch_log_group" "planner_logs" {
   retention_in_days = 7
   tags              = { Project = var.project_name }
 }
+# Add RESULTS_QUEUE_URL to reporter env
+# (Already added via CLI — this makes it permanent)

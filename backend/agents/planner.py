@@ -58,14 +58,15 @@ Maximum 5 tasks. Be specific and actionable."""
 
 
 def lambda_handler(event, context):
-    # Parse input
     if isinstance(event.get('body'), str):
         body = json.loads(event['body'])
     else:
         body = event.get('body', event)
 
-    question  = body.get('question', '')
-    timestamp = datetime.now(UTC).isoformat()
+    question       = body.get('question', '')
+    # Get correlationId from frontend request
+    correlation_id = body.get('correlationId', '')
+    timestamp      = datetime.now(UTC).isoformat()
 
     if not question:
         return {
@@ -74,25 +75,26 @@ def lambda_handler(event, context):
         }
 
     logger.info(f"Planning: {question}")
+    if correlation_id:
+        logger.info(f"CorrelationId: {correlation_id}")
 
     tasks        = break_into_tasks(question)
     tasks_queued = []
 
     for task in tasks:
         message = {
-            "question":  question,
-            "task_id":   task['task_id'],
-            "topic":     task['topic'],
-            "priority":  task['priority'],
-            "timestamp": timestamp,
-            "source":    "planner"
+            "question":      question,
+            "task_id":       task['task_id'],
+            "topic":         task['topic'],
+            "priority":      task['priority'],
+            "timestamp":     timestamp,
+            "source":        "planner",
+            "correlationId": correlation_id  # ← pass through
         }
-
         sqs.send_message(
             QueueUrl    = RESEARCH_QUEUE_URL,
             MessageBody = json.dumps(message)
         )
-
         tasks_queued.append(task['topic'])
         logger.info(f"Queued: {task['topic']}")
 
@@ -103,6 +105,6 @@ def lambda_handler(event, context):
             "tasks_queued": tasks_queued,
             "task_count":   len(tasks_queued),
             "timestamp":    timestamp,
-            "message":      f"Queued {len(tasks_queued)} research tasks. Results stored in knowledge base shortly."
+            "message":      f"Queued {len(tasks_queued)} research tasks"
         })
     }
