@@ -201,15 +201,16 @@ resource "aws_bedrock_guardrail" "alex" {
       type = "DENY"
     }
     topics_config {
-      name       = "off-topic-requests"
-      definition = "Requests unrelated to financial research, stock analysis, or market information"
-      examples   = [
-        "Write me a poem",
-        "Help me with my homework",
-        "Tell me a joke"
-      ]
-      type = "DENY"
-    }
+        name       = "off-topic-requests"
+        definition = "Requests completely unrelated to financial research, stock analysis, market information, or investment topics such as creative writing, homework help, or general coding questions"
+        examples   = [
+          "Write me a poem about love",
+          "Help me with my math homework",
+          "Tell me a joke",
+          "How do I cook pasta"
+        ]
+        type = "DENY"
+}
   }
 
   sensitive_information_policy_config {

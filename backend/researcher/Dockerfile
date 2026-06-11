@@ -41,7 +41,8 @@ RUN uv pip install --system \
     httpx \
     pydantic \
     litellm \
-    yfinance
+    yfinance \
+    edgartools
 
 
     

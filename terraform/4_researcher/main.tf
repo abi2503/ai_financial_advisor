@@ -138,7 +138,8 @@ resource "aws_iam_role_policy" "ecs_task_bedrock_policy" {
         Action = [
           "bedrock:InvokeModel",
           "bedrock:InvokeModelWithResponseStream",
-          "bedrock:ListFoundationModels"
+          "bedrock:ListFoundationModels",
+          "bedrock:ApplyGuardrail"
         ]
         Resource = "*"
       },

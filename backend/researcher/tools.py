@@ -10,6 +10,89 @@ from datetime import datetime, UTC
 
 logger = logging.getLogger(__name__)
 
+@function_tool
+async def get_sec_filings(ticker: str, form_type: str = "10-K") -> str:
+    """
+    Get SEC filing content using EdgarTools.
+    Legally compliant — respects SEC rate limits.
+    Returns actual filing content not just metadata.
+
+    Why EdgarTools over Playwright for SEC:
+      - Respects SEC rate limits automatically
+      - Returns structured data not HTML
+      - Access to risk factors, MD&A, financials
+      - Much more reliable than browser scraping
+
+    Args:
+        ticker:    Stock ticker e.g. NVDA AAPL TSLA
+        form_type: Filing type — 10-K, 10-Q, 8-K, 4
+
+    Returns:
+        Structured filing content as text
+    """
+    try:
+        import edgar
+        import asyncio
+
+        # Set identity — required by SEC
+        # Why: SEC requires identification for programmatic access
+        edgar.set_identity("Alex AI Research alexai@example.com")
+
+        # Run in executor since edgar is synchronous
+        loop = asyncio.get_event_loop()
+
+        def fetch_filing():
+            company = edgar.Company(ticker.upper())
+            filing  = company.get_filings(form=form_type).latest(1)
+
+            if not filing:
+                return f"No {form_type} filings found for {ticker}"
+
+            result_parts = [
+                f"{ticker.upper()} — {form_type} Filing",
+                f"Filed: {filing.filing_date}",
+                f"Period: {filing.period_of_report}",
+                f"Accession: {filing.accession_no}",
+                "---"
+            ]
+
+            # Get document object for structured access
+            try:
+                doc = filing.obj()
+
+                # Risk Factors
+                if hasattr(doc, 'risk_factors') and doc.risk_factors:
+                    rf_text = str(doc.risk_factors)[:2000]
+                    result_parts.append("RISK FACTORS:")
+                    result_parts.append(rf_text)
+                    result_parts.append("---")
+
+                # Management Discussion
+                if hasattr(doc, 'management_discussion') and doc.management_discussion:
+                    md_text = str(doc.management_discussion)[:2000]
+                    result_parts.append("MANAGEMENT DISCUSSION & ANALYSIS:")
+                    result_parts.append(md_text)
+                    result_parts.append("---")
+
+                # Business section
+                if hasattr(doc, 'business') and doc.business:
+                    biz_text = str(doc.business)[:1000]
+                    result_parts.append("BUSINESS OVERVIEW:")
+                    result_parts.append(biz_text)
+                    result_parts.append("---")
+
+            except Exception as e:
+                result_parts.append(f"Note: Could not parse filing content: {e}")
+
+            return "\n".join(result_parts)
+
+        result = await loop.run_in_executor(None, fetch_filing)
+        logger.info(f"EdgarTools fetched {form_type} for {ticker}")
+        return result
+
+    except Exception as e:
+        logger.error(f"EdgarTools error for {ticker}: {e}")
+        return f"Could not fetch {form_type} for {ticker}: {str(e)}"
 
 @function_tool
 async def get_stock_data(ticker: str) -> str:
