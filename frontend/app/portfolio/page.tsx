@@ -427,19 +427,48 @@ export default function PortfolioPage() {
                   )}
 
                   {/* Alex commentary */}
-                  <div className="mt-3 p-3 bg-blue-500/5 border border-blue-500/10 rounded-lg">
-                    <div className="text-xs text-blue-400 font-medium mb-1">
-                      🤖 Alex
-                    </div>
-                    <div className="text-xs text-gray-400">
-                      {price
-                        ? isUp
-                          ? `${stock.ticker} is up ${price.changePct}% today. Click Research → for full analysis.`
-                          : `${stock.ticker} is down ${Math.abs(parseFloat(price.changePct)).toFixed(2)}% today. Click Research → to understand why.`
-                        : `Click Research → to get Alex's latest analysis on ${stock.ticker}`
-                      }
-                    </div>
-                  </div>
+<div className="mt-3 p-3 bg-blue-500/5 border border-blue-500/10 rounded-lg">
+  <div className="text-xs text-blue-400 font-medium mb-2">
+    🤖 Alex Commentary
+  </div>
+  <div className="space-y-1">
+    {price ? (
+      <>
+        <div className="flex items-center justify-between text-xs">
+          <span className="text-gray-500">Today</span>
+          <span className={isUp ? 'text-green-400' : 'text-red-400'}>
+            {isUp ? '▲' : '▼'} {Math.abs(parseFloat(price.changePct)).toFixed(2)}%
+            {isUp ? ' — momentum positive' : ' — under pressure'}
+          </span>
+        </div>
+        {stock.shares > 0 && stock.purchase_price > 0 && (
+          <div className="flex items-center justify-between text-xs">
+            <span className="text-gray-500">Your position</span>
+            <span className={
+              parseFloat(price.price) >= stock.purchase_price
+                ? 'text-green-400'
+                : 'text-red-400'
+            }>
+              {parseFloat(price.price) >= stock.purchase_price ? '▲' : '▼'}
+              {(((parseFloat(price.price) - stock.purchase_price) /
+                stock.purchase_price) * 100).toFixed(1)}% from cost
+            </span>
+          </div>
+        )}
+        <div className="text-xs text-gray-500 mt-1 pt-1 border-t border-gray-800">
+          {isUp
+            ? `${stock.ticker} showing strength — consider researching catalysts`
+            : `${stock.ticker} declining — research for risk assessment`
+          }
+        </div>
+      </>
+    ) : (
+      <div className="text-xs text-gray-500">
+        Add position details for personalized commentary
+      </div>
+    )}
+  </div>
+</div>
                 </div>
               )
             })}

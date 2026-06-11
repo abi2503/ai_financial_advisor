@@ -164,10 +164,11 @@ async function pollForResults(
 ): Promise<{ results: string[]; timedOut: boolean }> {
   const results:   string[] = []
   const startTime: number   = Date.now()
-  // Track receipt handles of foreign messages so we
-  // can release them immediately (reset visibility)
-  // rather than holding them for 30 s
-  const foreignHandles: string[] = []
+
+  console.log(`=== POLL START ===`)
+  console.log(`Queue: ${RESULTS_QUEUE_URL}`)
+  console.log(`Looking for: ${correlationId}`)
+  console.log(`Timeout: ${timeoutMs}ms`)
 
   while (
     results.length < taskCount &&
@@ -175,50 +176,41 @@ async function pollForResults(
   ) {
     try {
       const response = await sqs.send(new ReceiveMessageCommand({
-        QueueUrl:            RESULTS_QUEUE_URL,
-        MaxNumberOfMessages: 10,
-        WaitTimeSeconds:     5,
-        VisibilityTimeout:   30,
-        // Ask SQS to return message attributes so we
-        // can read correlationId without parsing body
+        QueueUrl:              RESULTS_QUEUE_URL,
+        MaxNumberOfMessages:   10,
+        WaitTimeSeconds:       5,
+        VisibilityTimeout:     30,
         MessageAttributeNames: ['correlationId'],
       }))
 
       const messages = response.Messages || []
+      console.log(`Poll: got ${messages.length} messages from SQS`)
 
       for (const msg of messages) {
-        try {
-          const body = JSON.parse(msg.Body || '{}')
+        const body          = JSON.parse(msg.Body || '{}')
+        const msgCorrelationId = body.correlationId || 
+          msg.MessageAttributes?.correlationId?.StringValue
+        
+        console.log(`  Message correlationId: ${msgCorrelationId}`)
+        console.log(`  Expected correlationId: ${correlationId}`)
+        console.log(`  Match: ${msgCorrelationId === correlationId}`)
 
-          // Check correlationId — body takes priority,
-          // fall back to message attribute
-          const msgCorrelationId =
-            body.correlationId ||
-            msg.MessageAttributes?.correlationId?.StringValue
-
-          // FIX 2 — only consume messages belonging to THIS request
-          if (msgCorrelationId !== correlationId) {
-            // Leave it alone — visibility timeout will
-            // expire and the correct poller will pick it up
-            continue
-          }
-
+        if (msgCorrelationId === correlationId) {
           const result = body.result || body.content || ''
           if (result) {
             results.push(result)
-
-            // Delete only our own processed messages
+            console.log(`  ✅ Got result ${results.length}/${taskCount}`)
             await sqs.send(new DeleteMessageCommand({
               QueueUrl:      RESULTS_QUEUE_URL,
               ReceiptHandle: msg.ReceiptHandle!
             }))
           }
-        } catch (e) {
-          console.error('Message parse error:', e)
         }
       }
 
       if (results.length < taskCount) {
+        const elapsed = Math.round((Date.now() - startTime) / 1000)
+        console.log(`Waiting... ${results.length}/${taskCount} (${elapsed}s)`)
         await new Promise(r => setTimeout(r, 2000))
       }
 
@@ -228,8 +220,8 @@ async function pollForResults(
     }
   }
 
-  // FIX 3 — explicitly signal whether we timed out
   const timedOut = results.length < taskCount
+  console.log(`=== POLL END: ${results.length}/${taskCount} timedOut=${timedOut} ===`)
   return { results, timedOut }
 }
 
@@ -303,7 +295,7 @@ export async function POST(req: NextRequest) {
       const { tasks, taskCount, timestamp } = await invokePlanner(topic, correlationId)
       console.log(`Planner queued ${taskCount} tasks:`, tasks)
 
-      const { results, timedOut } = await pollForResults(taskCount, correlationId, 90000)
+      const { results, timedOut } = await pollForResults(taskCount, correlationId, 180000)
       console.log(`Got ${results.length}/${taskCount} results from SQS`)
 
       const synthesized = synthesizeResults(topic, tasks, results, timedOut)
@@ -336,7 +328,7 @@ export async function POST(req: NextRequest) {
     const ecsResponse = await fetch(`${ECS_URL}/research`, {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ topic }),
+      body:    JSON.stringify({ topic, user_id: userId, session_id: req.headers.get("x-session-id") || "" }),
       signal:  AbortSignal.timeout(120000)
     })
 

@@ -14,7 +14,7 @@ os.chdir(os.path.join(os.path.dirname(os.path.abspath(__file__)), "../.."))
 
 REGION             = "us-east-1"
 PLANNER_FUNCTION   = "alex-planner"
-RESULTS_QUEUE_URL  = "https://sqs.us-east-1.amazonaws.com/381491881089/alex-results-queue"
+RESULTS_QUEUE_URL  = "https://sqs.us-east-1.amazonaws.com/381491881089/alex-frontend-results"
 RESEARCH_QUEUE_URL = "https://sqs.us-east-1.amazonaws.com/381491881489/alex-research-queue"
 
 lmb = boto3.client("lambda", region_name=REGION)
