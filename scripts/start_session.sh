@@ -1,67 +1,86 @@
 #!/bin/bash
 # ============================================
-# Alex AI — Stop Development Session
-# Run this at the END of every session
-# Saves ~$4.83/day
+# Alex AI — Start Development Session
+# Run this at the START of every session
+# Spins up SageMaker + ECS + updates SSM
+# Usage: bash scripts/start_session.sh
 # ============================================
 set -e
 cd "$(dirname "$0")/.."
-source .env
 
 echo ""
-echo "🛑 Stopping Alex AI Development Session"
+echo "🚀 Starting Alex AI Development Session"
 echo "========================================"
-
-# Disable EventBridge
+echo "$(date)"
 echo ""
-echo "⏰ Disabling EventBridge scheduler..."
-aws scheduler update-schedule \
-  --name alex-auto-research \
-  --state DISABLED \
-  --schedule-expression "rate(2 hours)" \
-  --flexible-time-window '{"Mode": "OFF"}' \
-  --target "$(aws scheduler get-schedule \
-    --name alex-auto-research \
-    --region us-east-1 \
-    --query 'Target' \
-    --output json)" \
-  --region us-east-1 > /dev/null 2>&1 || true
-echo "  ✅ Scheduler disabled"
 
-# Destroy ECS
-echo ""
-echo "🐳 Destroying ECS researcher agent..."
-cd terraform/4_researcher
-terraform destroy -auto-approve -compact-warnings > /dev/null
-echo "  ✅ ECS destroyed (saves \$1.73/day)"
+# Load env vars
+if [ -f ".env" ]; then
+  set -a
+  source <(grep -v '^#' .env | sed 's/ *= */=/g')
+  set +a
+else
+  echo "❌ .env not found — run from project root"
+  exit 1
+fi
 
-# Destroy SageMaker
-echo ""
-echo "🧠 Destroying SageMaker endpoint..."
-cd ../2_sagemaker
-terraform destroy -auto-approve -compact-warnings > /dev/null
-echo "  ✅ SageMaker destroyed (saves \$3.10/day)"
+REGION=${DEFAULT_AWS_REGION:-us-east-1}
 
-# Git commit
-echo ""
-echo "📝 Saving work to GitHub..."
+# ============================================
+# Step 1 — SageMaker Endpoint
+# ============================================
+echo "🧠 Starting SageMaker embedding endpoint..."
+cd terraform/2_sagemaker
+terraform apply -auto-approve -compact-warnings 2>&1 | tail -3
+SM_STATUS=$(aws sagemaker describe-endpoint \
+  --endpoint-name alex-embedding \
+  --region $REGION \
+  --query "EndpointStatus" \
+  --output text 2>/dev/null)
+echo "  ✅ SageMaker: $SM_STATUS"
 cd ../..
-git add .
-git commit -m "Auto-save: session end $(date '+%Y-%m-%d %H:%M')" > /dev/null 2>&1 || true
-git push origin main > /dev/null 2>&1 || true
-echo "  ✅ Code saved to GitHub"
 
+# ============================================
+# Step 2 — ECS Infrastructure
+# ============================================
+echo ""
+echo "🐳 Starting ECS infrastructure..."
+cd terraform/4_researcher
+terraform apply -auto-approve -compact-warnings 2>&1 | tail -3
+echo "  ✅ ECS infrastructure ready"
+cd ../..
+
+# ============================================
+# Step 3 — Deploy Researcher Image
+# ============================================
+echo ""
+echo "📦 Deploying researcher agent..."
+cd backend/researcher
+bash deploy.sh
+cd ../..
+
+# ============================================
+# Step 4 — Verify Health
+# ============================================
+echo ""
+echo "🏥 Running health check..."
+bash scripts/health_check.sh
+
+# ============================================
+# Step 5 — Start Frontend Reminder
+# ============================================
 echo ""
 echo "========================================"
-echo "✅ Session stopped!"
-echo "💰 Saving ~\$4.83/day while stopped"
+echo "✅ Session ready!"
 echo ""
-echo "Remaining costs while stopped:"
-echo "  Aurora Serverless:  ~\$0.00/day"
-echo "  S3 Vectors:         ~\$0.10/day"
-echo "  CloudWatch:         ~\$0.01/day"
-echo "  Lambda:             ~\$0.00/day"
-echo "  Total:              ~\$0.11/day"
+echo "Next steps:"
+echo "  cd frontend && npm run dev"
 echo ""
-echo "Run start_session.sh to resume"
-
+echo "Test scripts:"
+echo "  python3 scripts/tests/test_edgar.py"
+echo "  bash scripts/tests/test_fast_research.sh"
+echo ""
+echo "💰 Remember to stop when done:"
+echo "  bash scripts/stop_session.sh"
+echo "  Saves \$4.83/day"
+echo "========================================"

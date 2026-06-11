@@ -124,7 +124,7 @@ async def run_data_agent(topic: str) -> str:
         result = await Runner.run(
             agent,
             input     = f"Research this investment topic: {topic}",
-            max_turns = 20,
+            max_turns = 25,
         )
 
     return result.final_output

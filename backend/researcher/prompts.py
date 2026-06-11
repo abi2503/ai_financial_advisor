@@ -252,6 +252,11 @@ STEP 6: ingest_financial_document to save
 
 STEP 7: Return FULL analysis to user
 
+CRITICAL: Complete ALL 4 data sources
+          Do NOT skip any step
+          Each step = exactly ONE tool call
+          Total turns budget: 10 turns max
+
 ═══════════════════════════════════════
 OUTPUT FORMAT
 ═══════════════════════════════════════
