@@ -25,7 +25,7 @@ echo "🏷️  Tagging image..."
 docker tag alex-researcher:amd64 "${ECR_URL}:latest"
 
 echo "📤 Pushing to ECR..."
-MAX_ATTEMPTS=10
+MAX_ATTEMPTS=30
 ATTEMPT=1
 PUSH_SUCCESS=false
 
