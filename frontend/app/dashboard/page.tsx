@@ -1,3 +1,4 @@
+import { RDSDataClient, ExecuteStatementCommand } from '@aws-sdk/client-rds-data'
 import { auth, currentUser } from '@clerk/nextjs/server'
 import { redirect } from 'next/navigation'
 import Navbar from '@/components/Navbar'
@@ -46,12 +47,35 @@ function cleanContent(content: string): string {
     .substring(0, 100) + '...'
 }
 
+async function getCosts() {
+  try {
+    const rds = new RDSDataClient({ region: process.env.AWS_REGION || 'us-east-1' })
+    const result = await rds.send(new ExecuteStatementCommand({
+      resourceArn: process.env.DB_CLUSTER_ARN!,
+      secretArn:   process.env.DB_SECRET_ARN!,
+      database:    process.env.DB_NAME || 'alex_db',
+      sql: `SELECT snapshot_date, total_cost, service_costs, digest FROM cost_snapshots ORDER BY snapshot_date DESC LIMIT 7`
+    }))
+    return (result.records || []).map(row => ({
+      date:     row[0]?.stringValue || '',
+      total:    parseFloat(row[1]?.stringValue || '0'),
+      services: JSON.parse(row[2]?.stringValue || '{}'),
+      digest:   row[3]?.stringValue || ''
+    }))
+  } catch (e) {
+    return []
+  }
+}
+
 export default async function Dashboard() {
   const { userId } = await auth()
   if (!userId) redirect('/sign-in')
 
   const user         = await currentUser()
   const autoResearch = await getAutoResearch()
+  const costs     = await getCosts()
+  const todayCost = costs[0]?.total || 0
+  const weekCost  = costs.reduce((sum: number, c: any) => sum + c.total, 0)
   const hour         = new Date().getHours()
   const greeting     = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening'
 
@@ -205,6 +229,43 @@ export default async function Dashboard() {
             <MessageSquare size={16} />
             Open Research Chat
           </Link>
+
+        {/* Cost Monitor Widget */}
+        <div className="bg-gray-900 border border-gray-800 rounded-xl p-6 mt-6">
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center gap-2">
+              <div className={`w-2 h-2 rounded-full ${todayCost > 10 ? 'bg-red-400 animate-pulse' : 'bg-green-400'}`} />
+              <h2 className="font-semibold text-white">AWS Cost Monitor</h2>
+            </div>
+            <span className={`text-xs px-2 py-1 rounded-full ${todayCost > 10 ? 'bg-red-500/20 text-red-400' : todayCost > 5 ? 'bg-yellow-500/20 text-yellow-400' : 'bg-green-500/20 text-green-400'}`}>
+              {todayCost > 10 ? '⚠️ Alert' : todayCost > 5 ? '👀 Monitor' : '✅ On Track'}
+            </span>
+          </div>
+          <div className="grid grid-cols-3 gap-4 mb-4">
+            <div className="bg-gray-800 rounded-lg p-3 text-center">
+      <div className="text-xs text-gray-500 mb-1">Today</div>
+              <div className={`text-lg font-bold ${todayCost > 10 ? 'text-red-400' : 'text-white'}`}>${todayCost.toFixed(2)}</div>
+              <div className="text-xs text-gray-600">threshold: $10</div>
+            </div>
+            <div className="bg-gray-800 rounded-lg p-3 text-center">
+              <div className="text-xs text-gray-500 mb-1">This Week</div>
+              <div className="text-lg font-bold text-white">${weekCost.toFixed(2)}</div>
+              <div className="text-xs text-gray-600">last 7 days</div>
+            </div>
+            <div className="bg-gray-800 rounded-lg p-3 text-center">
+              <div className="text-xs text-gray-500 mb-1">Daily Avg</div>
+              <div className="text-lg font-bold text-white">${costs.length > 0 ? (weekCost / costs.length).toFixed(2) : '0.00'}</div>
+              <div className="text-xs text-gray-600">7-day average</div>
+            </div>
+          </div>
+          {costs[0]?.digest && (
+            <div className="p-3 bg-gray-800 rounded-lg">
+              <div className="text-xs text-gray-500 mb-1">AI Cost Analysis</div>
+              <p className="text-xs text-gray-300 leading-relaxed line-clamp-3">{costs[0].digest}</p>
+            </div>
+          )}
+          <div className="mt-3 text-xs text-gray-600 text-center">Updates daily at 8AM UTC · Alert threshold: $10/day</div>
+        </div>
         </div>
 
       </main>
