@@ -1,4 +1,5 @@
 'use client'
+import React from 'react'
 import { useState, useRef, useEffect, Suspense } from 'react'
 import { useSearchParams } from 'next/navigation'
 import Navbar from '@/components/Navbar'
@@ -145,6 +146,88 @@ function ReasoningSteps({
   )
 }
 
+
+
+function renderMarkdown(text: string): string {
+  const lines = text.split('\n')
+  let html = ''
+  let inTable = false
+  let tableHtml = ''
+  let tableRowCount = 0
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+    if (line.startsWith('|')) {
+      if (line.match(/^\|[-: |]+\|$/)) continue
+      const cells = line.split('|').filter(c => c.trim()).map(c =>
+        c.trim().replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+      )
+      if (!inTable) {
+        inTable = true
+        tableRowCount = 0
+        tableHtml = '<div style="overflow-x:auto;margin:12px 0;border-radius:8px;border:1px solid #374151"><table style="width:100%;font-size:12px"><thead><tr style="background:#1f2937;border-bottom:1px solid #374151">'
+        tableHtml += cells.map(c => `<th style="padding:8px 12px;text-align:left;color:#d1d5db;font-weight:500">${c}</th>`).join('')
+        tableHtml += '</tr></thead><tbody>'
+      } else {
+        tableRowCount++
+        tableHtml += `<tr style="border-bottom:1px solid #1f2937">`
+        tableHtml += cells.map(c => `<td style="padding:8px 12px;color:#d1d5db">${c}</td>`).join('')
+        tableHtml += '</tr>'
+      }
+      const next = lines[i+1] || ''
+      if (!next.startsWith('|')) {
+        tableHtml += '</tbody></table></div>'
+        html += tableHtml
+        tableHtml = ''
+        inTable = false
+      }
+      continue
+    }
+    if (inTable) {
+      tableHtml += '</tbody></table></div>'
+      html += tableHtml
+      tableHtml = ''
+      inTable = false
+    }
+    if (line.startsWith('### ') || line.startsWith('## ')) {
+      html += `<div style="font-weight:700;color:white;font-size:15px;margin-top:12px;margin-bottom:4px">${line.replace(/^#+\s/, '')}</div>`
+    } else if (line.startsWith('# ')) {
+      html += `<div style="font-weight:700;color:white;font-size:17px;margin-top:16px;margin-bottom:8px">${line.replace(/^#\s/, '')}</div>`
+    } else if (line.startsWith('- ') || line.startsWith('* ')) {
+      const t = line.slice(2).replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+      html += `<div style="display:flex;gap:8px;color:#e5e7eb;margin-left:8px"><span style="color:#60a5fa;flex-shrink:0">•</span><span>${t}</span></div>`
+    } else if (/^\d+\.\s/.test(line)) {
+      const num = line.match(/^(\d+)/)?.[1]
+      const t = line.replace(/^\d+\.\s/, '').replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+      html += `<div style="display:flex;gap:8px;color:#e5e7eb;margin-left:8px"><span style="color:#60a5fa;width:16px;flex-shrink:0">${num}.</span><span>${t}</span></div>`
+    } else if (line.startsWith('---')) {
+      html += '<div style="border-top:1px solid #374151;margin:8px 0"></div>'
+    } else if (!line.trim()) {
+      html += '<div style="height:4px"></div>'
+    } else if (line.startsWith('**') && line.endsWith('**') && line.length > 4) {
+      html += `<div style="font-weight:600;color:white;margin-top:8px">${line.slice(2,-2)}</div>`
+    } else {
+      const t = line.replace(/\*\*(.*?)\*\*/g, '<strong style="color:white;font-weight:600">$1</strong>')
+      html += `<div style="color:#e5e7eb">${t}</div>`
+    }
+  }
+  if (inTable) {
+    tableHtml += '</tbody></table></div>'
+    html += tableHtml
+  }
+  return html
+}
+
+function StreamingText({ content }: { content: string }) {
+  const ref = React.useRef<HTMLDivElement>(null)
+  React.useEffect(() => {
+    if (!ref.current) return
+    ref.current.innerHTML = renderMarkdown(content) +
+      '<span style="display:inline-block;width:2px;height:16px;background:#60a5fa;margin-left:2px;animation:pulse 1s infinite"></span>'
+  }, [content])
+  return <div ref={ref} style={{fontSize:'14px',lineHeight:'1.6'}} />
+}
+
 function ResearchPage() {
   const searchParams = useSearchParams()
   const initialQ     = searchParams.get('q') || ''
@@ -221,6 +304,7 @@ function ResearchPage() {
         buffer = lines.pop() || ''
 
         for (const line of lines) {
+          if (line.startsWith(':')) continue
           if (!line.startsWith('data: ')) continue
           const rawData = line.slice(6).trim()
           if (!rawData) continue
@@ -396,7 +480,8 @@ function ResearchPage() {
             buffer = lines.pop() || ''
 
             for (const line of lines) {
-              if (!line.startsWith('data: ')) continue
+              if (line.startsWith(':')) continue
+          if (!line.startsWith('data: ')) continue
               try {
                 const data = JSON.parse(line.slice(6))
                 if (data.type === 'reasoning') {
@@ -546,8 +631,8 @@ function ResearchPage() {
               <div className={`max-w-[85%] p-4 ${
                 msg.role === 'user'
                   ? 'bg-blue-600 rounded-2xl rounded-tr-sm'
-                  : 'bg-gray-900 border border-gray-800 rounded-2xl rounded-tl-sm min-h-[60px]'
-              }`}>
+                  : 'bg-gray-900 border border-gray-800 rounded-2xl rounded-tl-sm min-h-[60px] transition-none'
+              }`} style={{ contain: 'layout' }}>
 
                 {msg.role === 'alex' && msg.mode && i > 0 && (
                   <div className="mb-3 flex items-center gap-2">
@@ -593,10 +678,9 @@ function ResearchPage() {
                   {msg.role === 'user' ? (
                     <span>{msg.content}</span>
                   ) : msg.streaming ? (
-                    <span className="whitespace-pre-wrap text-gray-200">
-                      {msg.content}
-                      <span className="inline-block w-0.5 h-4 bg-blue-400 ml-0.5 animate-pulse align-middle" />
-                    </span>
+                    <div className="text-gray-200 text-sm leading-relaxed">
+                      <StreamingText content={msg.content} />
+                    </div>
                   ) : (
                     <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
                       {msg.content}

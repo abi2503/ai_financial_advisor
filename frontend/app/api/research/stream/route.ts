@@ -22,25 +22,30 @@ export async function POST(req: NextRequest) {
     const ecsResponse = await fetch(`${ECS_URL}/research/stream`, {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({
-        topic,
-        user_id:    userId,
-        session_id: sessionId
-      }),
+      body:    JSON.stringify({ topic, user_id: userId, session_id: sessionId }),
     })
 
     if (!ecsResponse.ok || !ecsResponse.body) {
       return new Response('Stream error', { status: 500 })
     }
 
-    const reader = ecsResponse.body.getReader()
+    const reader  = ecsResponse.body.getReader()
+    const encoder = new TextEncoder()
+
     const stream = new ReadableStream({
       async start(controller) {
         try {
           while (true) {
             const { done, value } = await reader.read()
-            if (done) { controller.close(); break }
+            if (done) {
+              controller.close()
+              break
+            }
+            // Enqueue chunk immediately
             controller.enqueue(value)
+            // Force flush by enqueuing empty comment
+            // This breaks Turbopack buffering
+            controller.enqueue(encoder.encode(': \n\n'))
           }
         } catch (err) {
           controller.error(err)
@@ -52,11 +57,13 @@ export async function POST(req: NextRequest) {
     return new Response(stream, {
       status:  200,
       headers: {
-        'Content-Type':                'text/event-stream',
-        'Cache-Control':               'no-cache, no-transform',
+        'Content-Type':                'text/event-stream; charset=utf-8',
+        'Cache-Control':               'no-cache, no-store, no-transform',
         'Connection':                  'keep-alive',
         'X-Accel-Buffering':           'no',
+        'X-Content-Type-Options':      'nosniff',
         'Access-Control-Allow-Origin': '*',
+        'Transfer-Encoding':           'chunked',
       }
     })
 
