@@ -991,7 +991,7 @@ def store_snapshot(health_checks, costs, llm_metrics,
                      (snapshot_time, health_status, daily_cost, digest)
                    VALUES (:time, :status::jsonb, :cost, :digest)""",
             parameters=[
-                {'name': 'time',   'value': {'stringValue': datetime.now(UTC).isoformat()}},
+                {'name': 'time',   'value': {'stringValue': datetime.now(UTC).strftime('%Y-%m-%d %H:%M:%S')}, 'typeHint': 'TIMESTAMP'},
                 {'name': 'status', 'value': {'stringValue': json.dumps(full_data)}},
                 {'name': 'cost',   'value': {'doubleValue': costs.get('total', 0)}},
                 {'name': 'digest', 'value': {'stringValue': digest[:3000]}}
