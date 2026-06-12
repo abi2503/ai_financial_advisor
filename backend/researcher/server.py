@@ -450,8 +450,8 @@ async def research_stream(request: ResearchRequest):
             words = filtered_response.split(' ')
             for i, word in enumerate(words):
                 yield f"data: {json.dumps({'type': 'token', 'content': word + ' '})}\n\n"
-                if i % 10 == 0:
-                    await asyncio.sleep(0.01)
+                if i % 3 == 0:
+                    await asyncio.sleep(0.05)
 
             latency = time.time() - start_time
             emit_metric('ResearchLatency', latency, 'Seconds', {'Mode': 'stream'})
@@ -552,8 +552,8 @@ async def research_deep_stream(request: ResearchRequest):
             words = filtered_response.split(' ')
             for i, word in enumerate(words):
                 yield f"data: {json.dumps({'type': 'token', 'content': word + ' '})}\n\n"
-                if i % 10 == 0:
-                    await asyncio.sleep(0.01)
+                if i % 3 == 0:
+                    await asyncio.sleep(0.05)
 
             latency = time.time() - start_time
             emit_metric('ResearchLatency', latency, 'Seconds', {'Mode': 'deep-stream'})

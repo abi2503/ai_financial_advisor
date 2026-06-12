@@ -168,7 +168,12 @@ function ResearchPage() {
 
   useEffect(() => { setMounted(true) }, [])
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+    const lastMsg = messages[messages.length - 1]
+    // Only scroll when not streaming to prevent shake
+    // During streaming, only scroll if near bottom
+    if (!lastMsg?.streaming) {
+      bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+    }
   }, [messages])
   useEffect(() => {
     if (initialQ && !hasAutoSubmitted.current) {
@@ -236,6 +241,7 @@ function ResearchPage() {
               setStatus('Streaming response...')
             } else if (data.type === 'token') {
               content += data.content
+              await new Promise(resolve => setTimeout(resolve, 0))
               setMessages(prev => [
                 ...prev.slice(0, -1),
                 { role: 'alex', content, time: getTime(), mode: 'fast', streaming: true, reasoning: reasoningSteps }
@@ -406,6 +412,7 @@ function ResearchPage() {
                   setStatus('Streaming analysis...')
                 } else if (data.type === 'token') {
                   content += data.content
+              await new Promise(resolve => setTimeout(resolve, 0))
                   setMessages(prev => [
                     ...prev.slice(0, -1),
                     { role: 'alex', content, time: getTime(), mode: 'deep', streaming: true, reasoning: deepReasoningSteps }
@@ -525,7 +532,7 @@ function ResearchPage() {
           </div>
         )}
 
-        <div className="flex-1 space-y-4 overflow-y-auto mb-4 min-h-0">
+        <div className="flex-1 space-y-4 overflow-y-auto mb-4 min-h-0 scroll-smooth">
           {messages.map((msg, i) => (
             <div key={i} className={`flex gap-3 ${msg.role === 'user' ? 'justify-end' : ''}`}>
               {msg.role === 'alex' && (
@@ -539,7 +546,7 @@ function ResearchPage() {
               <div className={`max-w-[85%] p-4 ${
                 msg.role === 'user'
                   ? 'bg-blue-600 rounded-2xl rounded-tr-sm'
-                  : 'bg-gray-900 border border-gray-800 rounded-2xl rounded-tl-sm'
+                  : 'bg-gray-900 border border-gray-800 rounded-2xl rounded-tl-sm min-h-[60px]'
               }`}>
 
                 {msg.role === 'alex' && msg.mode && i > 0 && (
@@ -585,13 +592,15 @@ function ResearchPage() {
                 <div className={`text-sm leading-relaxed ${msg.role === 'user' ? 'text-white' : 'text-gray-200'}`}>
                   {msg.role === 'user' ? (
                     <span>{msg.content}</span>
+                  ) : msg.streaming ? (
+                    <span className="whitespace-pre-wrap text-gray-200">
+                      {msg.content}
+                      <span className="inline-block w-0.5 h-4 bg-blue-400 ml-0.5 animate-pulse align-middle" />
+                    </span>
                   ) : (
                     <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
                       {msg.content}
                     </ReactMarkdown>
-                  )}
-                  {msg.streaming && msg.content && (
-                    <span className="inline-block w-1 h-4 bg-blue-400 ml-0.5 animate-pulse" />
                   )}
                 </div>
 
