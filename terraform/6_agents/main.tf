@@ -81,53 +81,80 @@ resource "aws_iam_role_policy" "agent_policy" {
     Version = "2012-10-17"
     Statement = [
       {
-        Effect = "Allow"
-        Action = [
-          "logs:CreateLogGroup",
-          "logs:CreateLogStream",
-          "logs:PutLogEvents"
-        ]
+        Effect   = "Allow"
+        Action   = ["logs:CreateLogGroup", "logs:CreateLogStream",
+                    "logs:PutLogEvents", "logs:FilterLogEvents",
+                    "logs:GetLogEvents", "logs:DescribeLogGroups"]
         Resource = "*"
       },
       {
-        Effect = "Allow"
-        Action = [
-          "sqs:SendMessage",
-          "sqs:ReceiveMessage",
-          "sqs:DeleteMessage",
-          "sqs:GetQueueAttributes"
-        ]
+        Effect   = "Allow"
+        Action   = ["sqs:SendMessage", "sqs:ReceiveMessage",
+                    "sqs:DeleteMessage", "sqs:GetQueueAttributes"]
         Resource = [
-  aws_sqs_queue.research_queue.arn,
-  aws_sqs_queue.results_queue.arn,
-  aws_sqs_queue.frontend_results_queue.arn,  # ← add this
-  aws_sqs_queue.dlq.arn
-]
+          aws_sqs_queue.research_queue.arn,
+          aws_sqs_queue.results_queue.arn,
+          aws_sqs_queue.frontend_results_queue.arn,
+          aws_sqs_queue.dlq.arn
+        ]
       },
       {
-        Effect = "Allow"
-        Action = [
-          "bedrock:InvokeModel",
-          "bedrock:InvokeModelWithResponseStream"
-        ]
+        Effect   = "Allow"
+        Action   = ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream",
+                    "bedrock:ApplyGuardrail"]
         Resource = "*"
       },
       {
-        Effect = "Allow"
-        Action = [
-          "rds-data:ExecuteStatement",
-          "rds-data:BatchExecuteStatement"
-        ]
+        Effect   = "Allow"
+        Action   = ["rds-data:ExecuteStatement", "rds-data:BatchExecuteStatement"]
         Resource = "*"
       },
       {
         Effect   = "Allow"
         Action   = ["secretsmanager:GetSecretValue"]
         Resource = "*"
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["ecs:DescribeServices", "ecs:DescribeClusters",
+                    "ecs:UpdateService", "ecs:ListTasks", "ecs:DescribeTasks"]
+        Resource = "*"
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["sagemaker:DescribeEndpoint", "sagemaker:ListEndpoints"]
+        Resource = "*"
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["cloudwatch:GetMetricStatistics", "cloudwatch:PutMetricData",
+                    "cloudwatch:ListMetrics", "cloudwatch:GetMetricData"]
+        Resource = "*"
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["ce:GetCostAndUsage", "ce:GetCostForecast", "ce:GetDimensionValues"]
+        Resource = "*"
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["ses:SendEmail", "ses:SendRawEmail"]
+        Resource = "*"
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["ssm:PutParameter", "ssm:GetParameter", "ssm:GetParameters"]
+        Resource = "*"
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["lambda:GetAccountSettings", "lambda:InvokeFunction", "lambda:GetFunction"]
+        Resource = "*"
       }
     ]
   })
 }
+
 
 # ============================================
 # Lambda Functions
@@ -318,3 +345,128 @@ resource "aws_cloudwatch_log_group" "planner_logs" {
 }
 # Add RESULTS_QUEUE_URL to reporter env
 # (Already added via CLI — this makes it permanent)
+
+# ============================================
+# Cost Monitor Lambda
+# ============================================
+resource "aws_lambda_function" "cost_monitor" {
+  filename      = "../../backend/agents/cost_monitor.zip"
+  function_name = "${var.project_name}-cost-monitor"
+  role          = aws_iam_role.agent_role.arn
+  handler       = "cost_monitor.lambda_handler"
+  runtime       = "python3.12"
+  timeout       = 120
+  memory_size   = 256
+
+  environment {
+    variables = {
+      DB_CLUSTER_ARN       = var.db_cluster_arn
+      DB_SECRET_ARN        = var.db_secret_arn
+      DB_NAME              = var.db_name
+      AWS_REGION_NAME      = var.aws_region
+      ALERT_EMAIL          = var.alert_email
+      FROM_EMAIL           = var.alert_email
+      DAILY_COST_THRESHOLD = "10.0"
+    }
+  }
+
+  tags = { Project = var.project_name }
+}
+
+resource "aws_cloudwatch_log_group" "cost_monitor_logs" {
+  name              = "/aws/lambda/${var.project_name}-cost-monitor"
+  retention_in_days = 7
+  tags              = { Project = var.project_name }
+}
+
+resource "aws_scheduler_schedule" "cost_monitor_daily" {
+  name  = "${var.project_name}-cost-monitor-daily"
+  state = "ENABLED"
+
+  flexible_time_window { mode = "OFF" }
+  schedule_expression = "cron(0 8 * * ? *)"
+
+  target {
+    arn      = aws_lambda_function.cost_monitor.arn
+    role_arn = aws_iam_role.eventbridge_role.arn
+    input    = jsonencode({ source = "eventbridge", task = "daily-cost-monitor" })
+  }
+}
+
+resource "aws_lambda_permission" "cost_monitor_scheduler" {
+  statement_id  = "AllowEventBridgeCostMonitor"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.cost_monitor.function_name
+  principal     = "scheduler.amazonaws.com"
+}
+
+# ============================================
+# Ops Agent Lambda
+# ============================================
+resource "aws_lambda_function" "ops_agent" {
+  filename      = "../../backend/agents/ops_agent.zip"
+  function_name = "${var.project_name}-ops-agent"
+  role          = aws_iam_role.agent_role.arn
+  handler       = "ops_agent.lambda_handler"
+  runtime       = "python3.12"
+  timeout       = 300
+  memory_size   = 512
+
+  environment {
+    variables = {
+      DB_CLUSTER_ARN       = var.db_cluster_arn
+      DB_SECRET_ARN        = var.db_secret_arn
+      DB_NAME              = var.db_name
+      AWS_REGION_NAME      = var.aws_region
+      ALERT_EMAIL          = var.alert_email
+      FROM_EMAIL           = var.alert_email
+      DAILY_COST_THRESHOLD = "10.0"
+      AUTONOMOUS_MODE      = "false"
+      FRONTEND_URL         = var.frontend_url
+      ALB_URL              = var.alb_url
+    }
+  }
+
+  tags = { Project = var.project_name }
+}
+
+resource "aws_cloudwatch_log_group" "ops_agent_logs" {
+  name              = "/aws/lambda/${var.project_name}-ops-agent"
+  retention_in_days = 7
+  tags              = { Project = var.project_name }
+}
+
+resource "aws_scheduler_schedule" "ops_agent_30min" {
+  name  = "${var.project_name}-ops-agent-30min"
+  state = "ENABLED"
+
+  flexible_time_window { mode = "OFF" }
+  schedule_expression = "rate(30 minutes)"
+
+  target {
+    arn      = aws_lambda_function.ops_agent.arn
+    role_arn = aws_iam_role.eventbridge_role.arn
+    input    = jsonencode({ source = "eventbridge", action = "monitor" })
+  }
+}
+
+resource "aws_scheduler_schedule" "ops_agent_weekly" {
+  name  = "${var.project_name}-ops-agent-weekly"
+  state = "ENABLED"
+
+  flexible_time_window { mode = "OFF" }
+  schedule_expression = "cron(0 8 ? * 2 *)"
+
+  target {
+    arn      = aws_lambda_function.ops_agent.arn
+    role_arn = aws_iam_role.eventbridge_role.arn
+    input    = jsonencode({ source = "eventbridge-weekly", action = "monitor" })
+  }
+}
+
+resource "aws_lambda_permission" "ops_agent_scheduler" {
+  statement_id  = "AllowEventBridgeOpsAgent"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.ops_agent.function_name
+  principal     = "scheduler.amazonaws.com"
+}

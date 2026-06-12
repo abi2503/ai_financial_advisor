@@ -37,3 +37,17 @@ variable "db_name" {
   type    = string
   default = "alex_db"
 }
+variable "alert_email" {
+  description = "Email for ops alerts"
+  default     = "abhishek.suresh2503@gmail.com"
+}
+
+variable "frontend_url" {
+  description = "Frontend URL for approval links"
+  default     = "https://ai-financial-advisor-t6kt-abi2503s-projects.vercel.app"
+}
+
+variable "alb_url" {
+  description = "ALB URL for health checks"
+  default     = ""
+}
