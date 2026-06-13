@@ -171,7 +171,7 @@ export default function PortfolioPage() {
 
   const totalValue = portfolio.reduce((sum, stock) => {
     const price  = parseFloat(prices[stock.ticker]?.price || '0')
-    const qty    = stock.shares || 1
+    const qty    = stock.shares || 0
     return sum + (price * qty)
   }, 0)
 
@@ -195,7 +195,12 @@ export default function PortfolioPage() {
             <p className="text-gray-400 text-sm mt-1">
               {loading ? 'Loading...' : (
                 <>
-                  {portfolio.length} positions
+                  {portfolio.length} positions · <span className="text-white font-semibold">${totalValue.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span>
+                  {totalCost > 0 && (
+                    <span className={`ml-2 text-sm font-medium ${parseFloat(totalGainPct || '0') >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                      {parseFloat(totalGainPct || '0') >= 0 ? '' : ''}{totalGainPct}% total return
+                    </span>
+                  )}
                   {totalValue > 0 && (
                     <span className="ml-2 text-white font-medium">
                       · ${totalValue.toLocaleString('en-US', {
@@ -284,6 +289,9 @@ export default function PortfolioPage() {
               const gainLossDollar = costBasis > 0
                 ? (currentValue - costBasis).toFixed(2)
                 : null
+              const currentPrice  = parseFloat(price?.price || '0')
+              const totalValue    = stock.shares * currentPrice
+              const ytdGainPct    = costBasis > 0 ? (((currentValue - costBasis) / costBasis) * 100) : 0
 
               return (
                 <div
@@ -314,7 +322,10 @@ export default function PortfolioPage() {
                       <div className="text-gray-400 text-sm">{stock.company}</div>
                       <div className="text-gray-600 text-xs mt-0.5">
                         {stock.shares > 0 && `${stock.shares} shares`}
-                        {stock.purchase_price > 0 && ` · Avg cost $${stock.purchase_price}`}
+                        {stock.purchase_price > 0 && ` · Avg $${stock.purchase_price.toFixed(2)}`}
+                        {stock.shares > 0 && stock.purchase_price > 0 && (
+                          <span className="text-gray-500"> · Cost basis ${(stock.shares * stock.purchase_price).toLocaleString()}</span>
+                        )}
                       </div>
                     </div>
 
