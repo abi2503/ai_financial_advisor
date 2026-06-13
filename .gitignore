@@ -19,3 +19,5 @@ node_modules/
 
 # AWS
 .aws-sam/
+backend/agents/trading/*.zip
+backend/agents/*.zip
