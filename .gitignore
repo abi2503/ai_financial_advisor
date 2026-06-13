@@ -21,3 +21,5 @@ node_modules/
 .aws-sam/
 backend/agents/trading/*.zip
 backend/agents/*.zip
+*.zip
+*.zip.bak
