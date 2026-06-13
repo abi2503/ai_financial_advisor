@@ -125,6 +125,13 @@ export default async function Dashboard() {
               desc:  'Browse past analysis',
               color: 'border-purple-500/20 hover:border-purple-500/40'
             },
+            {
+              href:  '/trading',
+              icon:  <TrendingUp className="text-indigo-400" size={20} />,
+              title: 'Trading Floor',
+              desc:  '6-agent AI debate',
+              color: 'border-indigo-500/20 hover:border-indigo-500/40'
+            },
           ].map((action) => (
             <Link
               key={action.href}
