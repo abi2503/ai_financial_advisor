@@ -88,3 +88,21 @@ output "trading_queue_url" {
 output "orchestrator_function" {
   value = aws_lambda_function.trading_orchestrator.function_name
 }
+
+resource "aws_iam_role_policy" "trading_sqs_policy" {
+  name = "alex-trading-sqs-policy"
+  role = "alex-agent-role"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["sqs:SendMessage", "sqs:ReceiveMessage",
+                  "sqs:DeleteMessage", "sqs:GetQueueAttributes"]
+      Resource = [
+        aws_sqs_queue.trading_queue.arn,
+        aws_sqs_queue.trading_results.arn
+      ]
+    }]
+  })
+}

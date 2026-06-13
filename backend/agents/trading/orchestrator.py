@@ -61,10 +61,10 @@ def get_user_portfolio(user_id: str) -> list:
     try:
         r = sql(
             """
-            SELECT ps.ticker, ps.shares, ps.purchase_price,
-                   ps.current_price, ps.total_value
-            FROM portfolio_stocks ps
-            JOIN users u ON u.id = ps.user_id
+            SELECT p.ticker, p.shares, p.purchase_price,
+                   p.purchase_price, (p.shares * p.purchase_price)
+            FROM portfolios p
+            JOIN users u ON u.id = p.user_id
             WHERE u.clerk_id = :user_id
             """,
             [{'name': 'user_id', 'value': {'stringValue': user_id}}]
@@ -95,7 +95,7 @@ def get_or_create_simulation(user_id: str, mode: str, portfolio: list) -> str:
         # Check for existing active simulation
         r = sql(
             """
-            SELECT id, current_value FROM trading_simulations ts
+            SELECT ts.id, ts.current_value FROM trading_simulations ts
             JOIN users u ON u.id = ts.user_id
             WHERE u.clerk_id = :uid AND ts.status = 'active'
             ORDER BY ts.started_at DESC LIMIT 1
@@ -118,7 +118,7 @@ def get_or_create_simulation(user_id: str, mode: str, portfolio: list) -> str:
             """
             INSERT INTO trading_simulations
               (user_id, mode, initial_value, current_value, cash_balance)
-            SELECT u.id, :mode, :init, :init, :cash
+            SELECT id, :mode, :init, :init, :cash
             FROM users WHERE clerk_id = :uid
             RETURNING id
             """,
@@ -141,7 +141,7 @@ def get_or_create_simulation(user_id: str, mode: str, portfolio: list) -> str:
                     INSERT INTO agent_positions
                       (simulation_id, user_id, ticker, shares, avg_cost,
                        current_price, current_value, cost_basis)
-                    SELECT :sim, u.id, :ticker, :shares, :avg_cost,
+                    SELECT :sim, id, :ticker, :shares, :avg_cost,
                            :price, :value, :basis
                     FROM users WHERE clerk_id = :uid
                     ON CONFLICT (simulation_id, ticker) DO NOTHING
@@ -239,6 +239,31 @@ def run_direct_analysis(sim_id: str, user_id: str,
 
     return results
 
+
+
+
+def warm_aurora():
+    import time
+    rds_client = boto3.client('rds-data', region_name=REGION)
+    for i in range(12):
+        try:
+            rds_client.execute_statement(
+                resourceArn=CLUSTER_ARN,
+                secretArn=SECRET_ARN,
+                database=DB_NAME,
+                sql='SELECT 1'
+            )
+            print(f"Aurora ready ({i+1})")
+            return True
+        except Exception as e:
+            err = str(e).lower()
+            if 'resuming' in err or 'paused' in err or 'unavailable' in err:
+                print(f"Aurora resuming {i+1}/12...")
+                time.sleep(10)
+            else:
+                print(f"Aurora ready")
+                return True
+    return False
 
 def lambda_handler(event, context):
     """
