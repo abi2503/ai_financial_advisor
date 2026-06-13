@@ -131,7 +131,7 @@ function TradeCard({ trade, isLatest }: { trade: Trade; isLatest: boolean }) {
         {trade.rationale && (
           <div className="mt-3 p-3 bg-gray-800 rounded-lg">
             <p className="text-xs text-gray-500 mb-1 font-semibold">ALEX DECISION</p>
-            <p className="text-sm text-gray-200">{trade.rationale}</p>
+            <p className="text-sm text-gray-200 whitespace-pre-wrap">{trade.rationale.replace(/\*\*/g, '')}</p>
           </div>
         )}
         <button onClick={() => setShowDebate(!showDebate)} className="mt-3 text-xs text-indigo-400 hover:text-indigo-300 flex items-center gap-1">
