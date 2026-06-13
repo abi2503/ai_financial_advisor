@@ -250,6 +250,7 @@ export default function TradingPage() {
             <Link href="/dashboard" className="text-gray-500 hover:text-gray-300 text-sm">← Dashboard</Link>
             <div>
               <h1 className="text-lg font-bold text-white">🏛️ Alex Trading Floor</h1>
+              <Link href="/observe" className="text-xs text-indigo-400 hover:text-indigo-300">🔭 View Agent Observability →</Link>
               <p className="text-xs text-gray-500">6-agent AI debate · Paper trading</p>
             </div>
           </div>
