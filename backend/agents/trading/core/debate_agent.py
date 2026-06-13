@@ -19,9 +19,29 @@ def emit_metric(name, value, dims=None):
     except Exception:
         pass
 
+def warm_aurora():
+    import time, boto3, os
+    rds_client = boto3.client("rds-data", region_name=os.environ.get("AWS_REGION_NAME", "us-east-1"))
+    cluster_arn = os.environ.get("DB_CLUSTER_ARN", "")
+    secret_arn  = os.environ.get("DB_SECRET_ARN", "")
+    for i in range(8):
+        try:
+            rds_client.execute_statement(resourceArn=cluster_arn, secretArn=secret_arn, database="alex_db", sql="SELECT 1")
+            print(f"Aurora ready ({i+1})")
+            return True
+        except Exception as e:
+            if "resuming" in str(e).lower() or "paused" in str(e).lower():
+                print(f"Aurora resuming {i+1}/8...")
+                time.sleep(10)
+            else:
+                return True
+    return False
+
+
 def lambda_handler(event, context):
     now = datetime.now(UTC)
     print(f"Debate Agent {now.isoformat()}")
+    warm_aurora()
     results = []
     for record in event.get("Records", []):
         try:
@@ -43,7 +63,7 @@ def lambda_handler(event, context):
                 continue
             print(f"Debating: {ticker} mode:{mode}")
             emit_metric("DebateStarted", 1, {"Ticker": ticker})
-            from debate_engine import run_debate
+            from core.debate_engine import run_debate
             result = run_debate(ticker=ticker, holding=holding,
                                sim_id=sim_id, user_id=user_id,
                                mode=mode, config=config)

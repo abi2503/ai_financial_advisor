@@ -194,8 +194,53 @@ def sttrade(result: DebateResult, sim_id: str, user_id: str):
             ]
         )
         print(f"Stored: {result.ticker} {result.final_action.value}")
+        return
     except Exception as e:
-        logger.error(f"Store error: {e}")
+            if 'resuming' in str(e).lower() or 'paused' in str(e).lower():
+                print(f"Aurora resuming, retry {attempt+1}/5...")
+                time.sleep(10)
+            else:
+                logger.error(f"Store error: {e}")
+                return
+    logger.error("Store failed after 5 attempts")
+
+
+
+
+def store_trade(result, sim_id, user_id):
+    import time
+    for attempt in range(5):
+        try:
+            params = [
+                {"name": "sim",       "value": {"stringValue": sim_id}, "typeHint": "UUID"},
+                {"name": "ticker",    "value": {"stringValue": result.ticker}},
+                {"name": "action",    "value": {"stringValue": result.final_action.value}},
+                {"name": "shares",    "value": {"longValue":   result.shares}},
+                {"name": "price",     "value": {"doubleValue": result.price}},
+                {"name": "value",     "value": {"doubleValue": result.total_value}},
+                {"name": "target",    "value": {"doubleValue": result.target_price or 0}},
+                {"name": "stop",      "value": {"doubleValue": result.stop_loss or 0}},
+                {"name": "rationale", "value": {"stringValue": result.rationale}},
+                {"name": "votes",     "value": {"stringValue": json.dumps([v.model_dump() for v in result.votes])}},
+                {"name": "debate",    "value": {"stringValue": json.dumps([{"agent": v.agent, "action": v.action.value, "confidence": v.confidence, "opening": v.opening_statement, "reasoning": v.detailed_reasoning} for v in result.votes])}},
+                {"name": "conf",      "value": {"doubleValue": result.confidence}},
+                {"name": "mode",      "value": {"stringValue": result.mode}},
+                {"name": "llm",       "value": {"stringValue": result.llm_used}},
+                {"name": "uid",       "value": {"stringValue": user_id}},
+            ]
+            sql = "INSERT INTO simulated_trades (simulation_id, user_id, ticker, action, shares, price, total_value, target_price, stop_loss, rationale, agent_votes, agent_debate, confidence, mode, llm_used) SELECT :sim::uuid, id, :ticker, :action, :shares, :price, :value, :target, :stop, :rationale, :votes::jsonb, :debate::jsonb, :conf, :mode, :llm FROM users WHERE clerk_id = :uid"
+            rds.execute_statement(resourceArn=CLUSTER_ARN, secretArn=SECRET_ARN, database=DB_NAME, sql=sql, parameters=params)
+            print(f"Stored: {result.ticker} {result.final_action.value}")
+            return
+        except Exception as e:
+            if "resuming" in str(e).lower() or "paused" in str(e).lower():
+                print(f"Aurora resuming {attempt+1}/5...")
+                time.sleep(10)
+            else:
+                import logging
+                logging.getLogger(__name__).error(f"Store error: {e}")
+                return
+    print("Store failed after 5 attempts")
 
 
 def run_debate(ticker: str, holding: dict, sim_id: str,
@@ -260,7 +305,7 @@ def run_debate(ticker: str, holding: dict, sim_id: str,
         stop_loss     = next((v.stop_loss for v in votes if v.stop_loss), None),
         rationale     = rationale,
         votes         = votes,
-        de          = mode,
+        mode          = mode,
         llm_used      = models.get("marcus", pro),
         debate_time_s = round(time.time() - start, 1),
         timestamp     = datetime.now(UTC).isoformat(),

@@ -36,7 +36,7 @@ resource "aws_lambda_function" "trading_orchestrator" {
   filename      = "../../backend/agents/trading/orchestrator.zip"
   function_name = "alex-trading-orchestrator"
   role          = local.agent_role
-  handler       = "orchestrator.lambda_handler"
+  handler       = "core.orchestrator.lambda_handler"
   runtime       = "python3.12"
   timeout       = 300
   memory_size   = 512
@@ -111,7 +111,7 @@ resource "aws_lambda_function" "debate_agent" {
   filename      = "../../backend/agents/trading/debate_agent.zip"
   function_name = "alex-debate-agent"
   role          = local.agent_role
-  handler       = "debate_agent.lambda_handler"
+  handler       = "core.debate_agent.lambda_handler"
   runtime       = "python3.12"
   timeout       = 300
   memory_size   = 1024

@@ -213,7 +213,7 @@ def run_direct_analysis(sim_id: str, user_id: str,
     This is the synchronous version of the trading floor.
     Slower but works without queue infrastructure.
     """
-    from debate_engine import run_debate
+    from core.debate_engine import run_debate
     results = []
 
     for holding in portfolio:
