@@ -1,0 +1,46 @@
+name: Deploy Lambda Agents
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "backend/agents/ops_agent.py"
+      - "backend/agents/cost_monitor.py"
+      - "terraform/6_agents/**"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v4
+        with:
+          python-version: "3.12"
+      - name: Configure AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+      - name: Deploy ops agent
+        run: |
+          mkdir -p /tmp/ops_pkg
+          cp backend/agents/ops_agent.py /tmp/ops_pkg/
+          cd /tmp/ops_pkg && zip -r /tmp/ops.zip . > /dev/null
+          aws lambda update-function-code \
+            --function-name alex-ops-agent \
+            --zip-file fileb:///tmp/ops.zip \
+            --region us-east-1 > /dev/null
+          aws lambda wait function-updated --function-name alex-ops-agent --region us-east-1
+          echo "OK: Ops agent deployed"
+      - name: Deploy cost monitor
+        run: |
+          mkdir -p /tmp/cost_pkg
+          cp backend/agents/cost_monitor.py /tmp/cost_pkg/
+          cd /tmp/cost_pkg && zip -r /tmp/cost.zip . > /dev/null
+          aws lambda update-function-code \
+            --function-name alex-cost-monitor \
+            --zip-file fileb:///tmp/cost.zip \
+            --region us-east-1 > /dev/null
+          aws lambda wait function-updated --function-name alex-cost-monitor --region us-east-1
+          echo "OK: Cost monitor deployed"

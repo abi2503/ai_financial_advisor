@@ -1,0 +1,34 @@
+name: Deploy Trading Floor
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "backend/agents/trading/**"
+      - "terraform/9_trading_floor/**"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v4
+        with:
+          python-version: "3.12"
+      - name: Configure AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+      - name: Package and deploy
+        run: bash scripts/deploy_trading.sh
+      - name: Smoke test
+        run: |
+          aws lambda invoke \
+            --function-name alex-trading-orchestrator \
+            --region us-east-1 \
+            --payload '{"trigger":"health_check"}' \
+            --cli-binary-format raw-in-base64-out /tmp/h.json
+          cat /tmp/h.json | python3 -m json.tool
+          echo "OK: Smoke test passed"

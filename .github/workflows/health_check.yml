@@ -1,0 +1,54 @@
+name: Daily Health Check
+
+on:
+  schedule:
+    - cron: "0 9 * * *"
+  workflow_dispatch:
+
+jobs:
+  health:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v4
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: pip install boto3
+      - name: Configure AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+      - name: Run ops agent health check
+        run: |
+          aws lambda invoke \
+            --function-name alex-ops-agent \
+            --region us-east-1 \
+            --payload '{"source":"github-actions","action":"monitor"}' \
+            --cli-binary-format raw-in-base64-out /tmp/ops.json
+          python3 -c "
+          import json
+          data = json.load(open('/tmp/ops.json'))
+          body = json.loads(data['body'])
+          score = body['health_score']
+          print(f'Health Score: {score}/100')
+          print(f'Services: {body["healthy"]}/{body["total_services"]}')
+          exit(0 if score >= 80 else 1)
+          "
+      - name: Check frontend
+        run: |
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 \
+            https://ai-financial-advisor-t6kt-abi2503s-projects.vercel.app)
+          echo "Frontend: HTTP $STATUS"
+          [ "$STATUS" = "200" ] || exit 1
+      - name: Check ECS
+        run: |
+          ALB=$(aws ssm get-parameter --name /alex/ecs_url --region us-east-1 \
+            --query Parameter.Value --output text 2>/dev/null || echo "")
+          if [ ! -z "$ALB" ]; then
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 $ALB/health)
+            echo "ECS: HTTP $STATUS"
+          fi
+          echo "OK: Health check complete"

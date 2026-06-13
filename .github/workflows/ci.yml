@@ -1,0 +1,34 @@
+name: Alex AI CI
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main]
+
+jobs:
+  syntax-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v4
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: pip install pydantic yfinance boto3 flake8
+      - name: Syntax check all Python files
+        run: |
+          find backend -name "*.py" | xargs python -m py_compile
+          echo "OK: All syntax checks passed"
+      - name: Validate Pydantic models
+        run: |
+          python -c "
+          import sys
+          sys.path.insert(0, 'backend/agents/trading')
+          from models import AgentVote, DebateResult, TradeAction
+          v = AgentVote(agent='marcus', action=TradeAction.BUY, confidence=85, detailed_reasoning='test')
+          print(f'OK: {v.agent} {v.action}')
+          "
+      - name: Lint
+        run: flake8 backend/ --max-line-length=120 --ignore=E501,W503,E402 --exclude=*.zip
+        continue-on-error: true

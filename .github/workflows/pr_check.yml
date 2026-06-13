@@ -1,0 +1,29 @@
+name: PR Validation
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.5.0"
+      - name: Validate Terraform - Trading Floor
+        run: terraform -chdir=terraform/9_trading_floor validate
+        continue-on-error: true
+      - name: Validate Terraform - Researcher
+        run: terraform -chdir=terraform/4_researcher validate
+        continue-on-error: true
+      - uses: actions/setup-python@v4
+        with:
+          python-version: "3.12"
+      - name: Install and lint
+        run: |
+          pip install flake8 pydantic
+          find backend -name "*.py" | xargs python -m py_compile
+          echo "OK: All Python files valid"

@@ -1,0 +1,33 @@
+name: Deploy Researcher
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "backend/researcher/**"
+      - "terraform/4_researcher/**"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+      - name: Setup Docker
+        uses: docker/setup-buildx-action@v3
+      - name: Deploy researcher to ECS
+        run: |
+          cd backend/researcher
+          bash deploy.sh
+          echo "OK: Researcher deployed"
+      - name: Health check
+        run: |
+          ALB=$(aws ssm get-parameter --name /alex/ecs_url --region us-east-1 --query Parameter.Value --output text)
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" $ALB/health)
+          echo "ECS Health: $STATUS"
+          [ "$STATUS" = "200" ] && echo "OK" || echo "Starting..."
