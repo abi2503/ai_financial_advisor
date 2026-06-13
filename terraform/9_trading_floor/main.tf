@@ -106,3 +106,39 @@ resource "aws_iam_role_policy" "trading_sqs_policy" {
     }]
   })
 }
+
+resource "aws_lambda_function" "debate_agent" {
+  filename      = "../../backend/agents/trading/debate_agent.zip"
+  function_name = "alex-debate-agent"
+  role          = local.agent_role
+  handler       = "debate_agent.lambda_handler"
+  runtime       = "python3.12"
+  timeout       = 300
+  memory_size   = 1024
+  environment {
+    variables = {
+      DB_CLUSTER_ARN  = local.cluster_arn
+      DB_SECRET_ARN   = local.secret_arn
+      DB_NAME         = "alex_db"
+      AWS_REGION_NAME = local.region
+    }
+  }
+  tags = { Project = local.project }
+}
+
+resource "aws_cloudwatch_log_group" "debate_agent_logs" {
+  name              = "/aws/lambda/alex-debate-agent"
+  retention_in_days = 7
+  tags              = { Project = local.project }
+}
+
+resource "aws_lambda_event_source_mapping" "trading_queue_trigger" {
+  event_source_arn = aws_sqs_queue.trading_queue.arn
+  function_name    = aws_lambda_function.debate_agent.arn
+  batch_size       = 1
+  enabled          = true
+}
+
+output "debate_agent_function" {
+  value = aws_lambda_function.debate_agent.function_name
+}
