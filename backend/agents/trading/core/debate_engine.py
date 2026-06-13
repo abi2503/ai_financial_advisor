@@ -266,11 +266,11 @@ def run_debate(ticker: str, holding: dict, sim_id: str,
 
     # Instantiate agents with configurable models
     agent_list = [
-        MarcusAgent(models.get("marcus",   pro)),
-        VictoriaAgent(models.get("victoria", pro)),
-        ZaraAgent(models.get("zara",       pro)),
-        ReidAgent(models.get("reid",       pro)),
-        ElenaAgent(models.get("elena",     lite)),
+        MarcusAgent(models.get("marcus",   pro),  sim_id),
+        VictoriaAgent(models.get("victoria", pro), sim_id),
+        ZaraAgent(models.get("zara",       pro),  sim_id),
+        ReidAgent(models.get("reid",       pro),  sim_id),
+        ElenaAgent(models.get("elena",     lite), sim_id),
     ]
 
     # Run all 5 agents in parallel

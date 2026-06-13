@@ -12,15 +12,15 @@ from prompts import zara as prompt_module
 class ZaraAgent(BaseAgent):
     name = "Zara Patel"
 
-    def __init__(self, model_id: str = "us.amazon.nova-pro-v1:0"):
-        self.model_id = model_id
+    def __init__(self, model_id: str = "us.amazon.nova-pro-v1:0", sim_id: str = ""):
+        super().__init__(model_id, sim_id)
 
     def vote(self, market_data, holding: dict, mode: str, data_ctx: str) -> AgentVote:
         ticker = market_data.ticker
         prompt = prompt_module.build_prompt(data_ctx, mode, ticker)
-        data   = self.invoke(prompt)
+        data, metrics = self.invoke(prompt, ticker=ticker)
         if not data:
-            data = self.default_vote(self.name)
+            data = self.default_vote()
         try:
             return AgentVote(
                 agent               = "zara",
