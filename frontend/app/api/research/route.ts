@@ -124,7 +124,9 @@ async function saveResearchSession(
 // ============================================
 async function invokePlanner(
   question:      string,
-  correlationId: string
+  correlationId: string,
+  userId:        string,
+  sessionId:     string,
 ): Promise<{
   tasks:     string[]
   taskCount: number
@@ -134,7 +136,13 @@ async function invokePlanner(
     FunctionName:   PLANNER_FUNCTION,
     InvocationType: 'RequestResponse',
     Payload:        Buffer.from(JSON.stringify({
-      body: JSON.stringify({ question, correlationId })
+      body: JSON.stringify({
+        question,
+        correlationId,
+        user_id:    userId,
+        clerk_id:   userId,
+        session_id: sessionId,
+      })
     }))
   }))
 
@@ -275,7 +283,9 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
-    const { topic } = await req.json()
+    const body = await req.json()
+    const topic = body.topic
+    const sessionId = body.session_id || req.headers.get('x-session-id') || ''
     if (!topic) {
       return NextResponse.json({ error: 'Missing topic' }, { status: 400 })
     }
@@ -292,7 +302,7 @@ export async function POST(req: NextRequest) {
       // FIX 2 — generate a unique ID for this request
       const correlationId = randomUUID()
 
-      const { tasks, taskCount, timestamp } = await invokePlanner(topic, correlationId)
+      const { tasks, taskCount, timestamp } = await invokePlanner(topic, correlationId, userId, sessionId)
       console.log(`Planner queued ${taskCount} tasks:`, tasks)
 
       const { results, timedOut } = await pollForResults(taskCount, correlationId, 180000)
@@ -328,7 +338,7 @@ export async function POST(req: NextRequest) {
     const ecsResponse = await fetch(`${ECS_URL}/research`, {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ topic, user_id: userId, session_id: req.headers.get("x-session-id") || "" }),
+      body:    JSON.stringify({ topic, user_id: userId, session_id: sessionId }),
       signal:  AbortSignal.timeout(120000)
     })
 

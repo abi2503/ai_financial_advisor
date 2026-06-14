@@ -8,14 +8,19 @@ export async function POST(req: NextRequest) {
   const { userId } = await auth()
   if (!userId) return new Response('Unauthorized', { status: 401 })
 
-  const { topic } = await req.json()
-  const ECS_URL   = await getEcsUrl()
-  if (!ECS_URL)   return new Response('Service unavailable', { status: 503 })
+  const body      = await req.json()
+  const topic     = body.topic
+  const sessionId = body.session_id || req.headers.get('x-session-id') || ''
+
+  if (!topic) return new Response('Missing topic', { status: 400 })
+
+  const ECS_URL = await getEcsUrl()
+  if (!ECS_URL) return new Response('Service unavailable', { status: 503 })
 
   const ecsResponse = await fetch(`${ECS_URL}/research/deep/stream`, {
     method:  'POST',
     headers: { 'Content-Type': 'application/json' },
-    body:    JSON.stringify({ topic }),
+    body:    JSON.stringify({ topic, user_id: userId, session_id: sessionId }),
   })
 
   if (!ecsResponse.ok || !ecsResponse.body) {

@@ -32,3 +32,5 @@ jobs:
       - name: Lint
         run: flake8 backend/ --max-line-length=120 --ignore=E501,W503,E402 --exclude=*.zip
         continue-on-error: true
+      - name: P0 foundation tests (static)
+        run: python3 scripts/tests/test_p0_foundation.py --static

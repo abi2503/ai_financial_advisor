@@ -7,6 +7,7 @@ import httpx
 import logging
 from agents import function_tool
 from datetime import datetime, UTC
+from query_trace import record_tool, record_api, get_trace
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +31,11 @@ async def get_sec_filings(ticker: str, form_type: str = "10-K") -> str:
     Returns:
         Structured filing content as text
     """
+    apis = [
+        "SEC EDGAR (EdgarTools)",
+        "https://www.sec.gov/cgi-bin/browse-edgar",
+    ]
+    t0 = __import__("time").monotonic()
     try:
         import edgar
         import asyncio
@@ -88,10 +94,18 @@ async def get_sec_filings(ticker: str, form_type: str = "10-K") -> str:
 
         result = await loop.run_in_executor(None, fetch_filing)
         logger.info(f"EdgarTools fetched {form_type} for {ticker}")
+        ok = not result.startswith("No ") and "Could not" not in result
+        ms = int((__import__("time").monotonic() - t0) * 1000)
+        record_tool("get_sec_filings", success=ok, error="" if ok else result[:120], latency_ms=ms, apis=apis)
+        record_api("SEC EDGAR (EdgarTools)", success=ok, error="" if ok else result[:120], latency_ms=ms)
         return result
 
     except Exception as e:
         logger.error(f"EdgarTools error for {ticker}: {e}")
+        ms = int((__import__("time").monotonic() - t0) * 1000)
+        err = str(e)[:120]
+        record_tool("get_sec_filings", success=False, error=err, latency_ms=ms, apis=apis)
+        record_api("SEC EDGAR (EdgarTools)", success=False, error=err, latency_ms=ms)
         return f"Could not fetch {form_type} for {ticker}: {str(e)}"
 
 @function_tool
@@ -107,10 +121,15 @@ async def get_stock_data(ticker: str) -> str:
     Returns:
         Current stock metrics and recent news headlines
     """
+    import time as time_mod
+    apis = [
+        "Yahoo Finance API (yfinance)",
+        "Yahoo Finance RSS (feeds.finance.yahoo.com)",
+    ]
+    t0 = time_mod.monotonic()
     try:
         import yfinance as yf
         import xml.etree.ElementTree as ET
-        import time
 
         ticker = ticker.upper().strip()
 
@@ -118,7 +137,7 @@ async def get_stock_data(ticker: str) -> str:
         # Why: Yahoo Finance rate limits ECS IPs
         #      Retry with backoff fixes most cases
         info = {}
-        for attempt in range(3):
+        for attempt in range(2):
             try:
                 stock = yf.Ticker(ticker)
                 info  = stock.info
@@ -126,11 +145,11 @@ async def get_stock_data(ticker: str) -> str:
                 if info.get('currentPrice') or info.get('regularMarketPrice'):
                     break
                 print(f"yfinance attempt {attempt+1} returned empty — retrying...")
-                time.sleep(2 * (attempt + 1))
+                time_mod.sleep(1)
             except Exception as e:
                 print(f"yfinance attempt {attempt+1} failed: {e}")
-                if attempt < 2:
-                    time.sleep(2 * (attempt + 1))
+                if attempt < 1:
+                    time_mod.sleep(1)
 
         # Extract metrics with safe fallbacks
         price     = info.get('currentPrice') or info.get('regularMarketPrice') or info.get('previousClose', 'N/A')
@@ -156,8 +175,11 @@ async def get_stock_data(ticker: str) -> str:
         if isinstance(fwd_pe,    float):        fwd_pe    = f"{fwd_pe:.2f}x"
 
         # If we couldn't get price show clear message
-        if price == 'N/A':
-            print(f"Warning: Could not get price for {ticker} after 3 attempts")
+        yf_ok = price != 'N/A'
+        if not yf_ok:
+            print(f"Warning: Could not get price for {ticker} after retries")
+        record_api("Yahoo Finance API (yfinance)", success=yf_ok,
+                   error="" if yf_ok else "No price data returned", latency_ms=int((time_mod.monotonic() - t0) * 1000))
 
         # Build keywords from company name for news filtering
         keywords = [ticker.lower()]
@@ -200,7 +222,7 @@ async def get_stock_data(ticker: str) -> str:
                             pubdate = pubdate[:16]
 
                     link  = item.findtext('link', '')
-                    entry = f"- [{pubdate}] [{title}] ({link})" if link else f"- [{pubdate}] {title}"
+                    entry = f"- [{pubdate}] [{title}]({link})" if link else f"- [{pubdate}] {title}"
                     fallback.append(entry)
 
                     if any(kw in combined for kw in keywords):
@@ -208,10 +230,13 @@ async def get_stock_data(ticker: str) -> str:
 
                 headlines  = relevant[:5] if len(relevant) >= 2 else fallback[:5]
                 news_lines = headlines
+                record_api("Yahoo Finance RSS (feeds.finance.yahoo.com)", url=url,
+                           success=True, latency_ms=int((time_mod.monotonic() - t0) * 1000))
 
         except Exception as e:
             logger.warning(f"News fetch failed for {ticker}: {e}")
             news_lines = ["- News temporarily unavailable"]
+            record_api("Yahoo Finance RSS (feeds.finance.yahoo.com)", success=False, error=str(e)[:120])
 
         news_text = "\n".join(news_lines) if news_lines else "- No recent news found"
 
@@ -242,11 +267,16 @@ RECENT NEWS:
 NOTE: Use this data directly. Do not override with memory.
 """
         logger.info(f"Fetched {ticker}: ${price} + {len(news_lines)} news items")
+        tool_ok = yf_ok
+        record_tool("get_stock_data", success=tool_ok,
+                    error="" if tool_ok else "Price data unavailable", latency_ms=int((time_mod.monotonic() - t0) * 1000), apis=apis)
         return result
 
     except Exception as e:
         logger.error(f"Error fetching {ticker}: {type(e).__name__}: {e}")
-        # Return partial data so agent can still generate analysis
+        record_tool("get_stock_data", success=False, error=str(e)[:120],
+                    latency_ms=int((time_mod.monotonic() - t0) * 1000), apis=apis)
+        record_api("Yahoo Finance API (yfinance)", success=False, error=str(e)[:120])
         return f"""
 {ticker} — Data temporarily limited
 Note: Yahoo Finance rate limiting detected.
@@ -416,12 +446,33 @@ async def ingest_financial_document(content: str, topic: str) -> str:
     """
     api_endpoint = os.getenv("ALEX_API_ENDPOINT")
     api_key      = os.getenv("ALEX_API_KEY")
+    ingest_url   = api_endpoint or ""
+    apis = [
+        f"Alex Ingest API ({ingest_url or 'not configured'})",
+        "Aurora pgvector (research_vectors)",
+        "SageMaker alex-embedding",
+    ]
+    import time as time_mod
+    t0 = time_mod.monotonic()
 
     logger.info(f"Storing research — Topic: {topic}")
     logger.info(f"Content length: {len(content)} chars")
     logger.info(f"API endpoint configured: {bool(api_endpoint)}")
 
+    payload = {"content": content, "topic": topic}
+    try:
+        from latency_tracker import get_tracker
+        tracker = get_tracker()
+        if tracker:
+            if tracker.clerk_id:
+                payload["user_id"] = tracker.clerk_id
+            if tracker.session_id:
+                payload["session_id"] = tracker.session_id
+    except ImportError:
+        pass
+
     if not api_endpoint or not api_key:
+        record_tool("ingest_financial_document", success=False, error="API not configured", apis=apis)
         return "Error: ALEX_API_ENDPOINT or ALEX_API_KEY not configured"
 
     try:
@@ -432,30 +483,38 @@ async def ingest_financial_document(content: str, topic: str) -> str:
                     "Content-Type": "application/json",
                     "x-api-key":    api_key
                 },
-                json={
-                    "content": content,
-                    "topic":   topic
-                }
+                json=payload
             )
             logger.info(f"Ingest response: {response.status_code}")
 
+        ms = int((time_mod.monotonic() - t0) * 1000)
         if response.status_code == 200:
             logger.info(f"Successfully stored: {topic}")
+            record_tool("ingest_financial_document", success=True, latency_ms=ms, apis=apis)
+            record_api(f"Alex Ingest API ({ingest_url})", success=True, latency_ms=ms)
             return f"Successfully stored research for topic: {topic}"
         else:
+            err = f"HTTP {response.status_code}"
             logger.error(f"Failed: {response.status_code} — {response.text}")
+            record_tool("ingest_financial_document", success=False, error=err, latency_ms=ms, apis=apis)
+            record_api(f"Alex Ingest API ({ingest_url})", success=False, error=err, latency_ms=ms)
             return f"Failed to store: {response.status_code} — {response.text}"
 
     except httpx.TimeoutException:
         logger.error("Timeout calling ingest API")
+        record_tool("ingest_financial_document", success=False, error="Timeout 30s", apis=apis)
+        record_api(f"Alex Ingest API ({ingest_url})", success=False, error="Timeout 30s")
         return "Error: Ingest API timed out after 30 seconds"
 
     except httpx.ConnectError as e:
         logger.error(f"Connection error: {e}")
+        record_tool("ingest_financial_document", success=False, error=str(e)[:120], apis=apis)
+        record_api(f"Alex Ingest API ({ingest_url})", success=False, error=str(e)[:120])
         return "Error: Could not connect to ingest API endpoint"
 
     except Exception as e:
         logger.error(f"Unexpected error: {type(e).__name__}: {e}")
         import traceback
         logger.error(traceback.format_exc())
+        record_tool("ingest_financial_document", success=False, error=str(e)[:120], apis=apis)
         return f"Error storing research: {type(e).__name__}: {str(e)}"

@@ -9,7 +9,10 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
-    const { topic } = await req.json()
+    const body      = await req.json()
+    const topic     = body.topic
+    const sessionId = body.session_id || req.headers.get('x-session-id') || ''
+
     if (!topic) {
       return NextResponse.json({ error: 'Missing topic' }, { status: 400 })
     }
@@ -32,7 +35,11 @@ export async function POST(req: NextRequest) {
       const ecsResponse = await fetch(`${ECS_URL}/research/deep`, {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ topic }),
+        body:    JSON.stringify({
+          topic,
+          user_id:    userId,
+          session_id: sessionId,
+        }),
         signal:  controller.signal
       })
 

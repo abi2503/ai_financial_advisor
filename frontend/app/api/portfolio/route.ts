@@ -34,6 +34,27 @@ async function getDbUserId(clerkId: string): Promise<string | null> {
   return result.records?.[0]?.[0]?.stringValue || null
 }
 
+function parseNumber(field: any): number {
+  if (!field) return 0
+  if (field.doubleValue !== undefined) return Number(field.doubleValue)
+  if (field.longValue !== undefined) return Number(field.longValue)
+  return parseFloat(field.stringValue || '0') || 0
+}
+
+function mapPortfolioRow(r: any) {
+  return {
+    id:             r[0]?.stringValue,
+    ticker:         r[1]?.stringValue,
+    company:        r[2]?.stringValue,
+    shares:         parseNumber(r[3]),
+    purchase_price: parseNumber(r[4]),
+    asset_class:    r[5]?.stringValue || 'stocks',
+    sector:         r[6]?.stringValue || '',
+    notes:          r[7]?.stringValue || '',
+    added_at:       r[8]?.stringValue,
+  }
+}
+
 export async function GET() {
   try {
     const { userId } = await auth()
@@ -47,26 +68,18 @@ export async function GET() {
     const result = await executeWithRetry(new ExecuteStatementCommand({
       ...DB,
       sql: `
-        SELECT id, ticker, company, shares, purchase_price,
+        SELECT DISTINCT ON (ticker)
+               id, ticker, company, shares, purchase_price,
                asset_class, sector, notes, added_at
         FROM portfolios
         WHERE user_id = :user_id::uuid
-        ORDER BY added_at DESC
+        ORDER BY ticker, added_at DESC
       `,
       parameters: [{ name: 'user_id', value: { stringValue: dbUserId } }]
     })) as any
 
-    const portfolio = (result.records || []).map((r: any) => ({
-      id:             r[0]?.stringValue,
-      ticker:         r[1]?.stringValue,
-      company:        r[2]?.stringValue,
-      shares:         r[3]?.doubleValue || 0,
-      purchase_price: r[4]?.doubleValue || 0,
-      asset_class:    r[5]?.stringValue || 'stocks',
-      sector:         r[6]?.stringValue || '',
-      notes:          r[7]?.stringValue || '',
-      added_at:       r[8]?.stringValue,
-    }))
+    const portfolio = (result.records || []).map(mapPortfolioRow)
+      .sort((a: any, b: any) => new Date(b.added_at).getTime() - new Date(a.added_at).getTime())
 
     return NextResponse.json({ portfolio })
 
@@ -93,12 +106,15 @@ export async function POST(req: NextRequest) {
       notes          = ''
     } = await req.json()
 
-    if (!ticker || !company) {
+    if (!ticker) {
       return NextResponse.json(
-        { error: 'Missing ticker or company' },
+        { error: 'Missing ticker' },
         { status: 400 }
       )
     }
+
+    const tickerUpper = ticker.toUpperCase()
+    const companyName = company?.trim() || tickerUpper
 
     const dbUserId = await getDbUserId(userId)
     if (!dbUserId) {
@@ -108,45 +124,76 @@ export async function POST(req: NextRequest) {
       )
     }
 
-    const result = await executeWithRetry(new ExecuteStatementCommand({
+    const sharesNum = parseFloat(shares) || 0
+    const priceNum  = parseFloat(purchase_price) || 0
+
+    // Upsert: update existing ticker for this user, otherwise insert
+    const updated = await executeWithRetry(new ExecuteStatementCommand({
       ...DB,
       sql: `
-        INSERT INTO portfolios 
-          (user_id, ticker, company, shares, purchase_price,
-           asset_class, sector, notes)
-        VALUES 
-          (:user_id::uuid, :ticker, :company, :shares,
-           :purchase_price, :asset_class, :sector, :notes)
-        ON CONFLICT DO NOTHING
+        UPDATE portfolios
+        SET company = :company,
+            shares = :shares,
+            purchase_price = :purchase_price,
+            asset_class = :asset_class,
+            sector = :sector,
+            notes = :notes
+        WHERE user_id = :user_id::uuid AND ticker = :ticker
         RETURNING id, ticker, company, shares, purchase_price,
                   asset_class, sector, added_at
       `,
       parameters: [
         { name: 'user_id',         value: { stringValue: dbUserId } },
-        { name: 'ticker',          value: { stringValue: ticker.toUpperCase() } },
-        { name: 'company',         value: { stringValue: company } },
-        { name: 'shares',          value: { doubleValue: parseFloat(shares) || 0 } },
-        { name: 'purchase_price',  value: { doubleValue: parseFloat(purchase_price) || 0 } },
+        { name: 'ticker',          value: { stringValue: tickerUpper } },
+        { name: 'company',         value: { stringValue: companyName } },
+        { name: 'shares',          value: { doubleValue: sharesNum } },
+        { name: 'purchase_price',  value: { doubleValue: priceNum } },
         { name: 'asset_class',     value: { stringValue: asset_class } },
         { name: 'sector',          value: { stringValue: sector } },
         { name: 'notes',           value: { stringValue: notes } },
       ]
     })) as any
 
+    let result = updated
+    if (!updated.records?.length) {
+      result = await executeWithRetry(new ExecuteStatementCommand({
+        ...DB,
+        sql: `
+          INSERT INTO portfolios
+            (user_id, ticker, company, shares, purchase_price,
+             asset_class, sector, notes)
+          VALUES
+            (:user_id::uuid, :ticker, :company, :shares,
+             :purchase_price, :asset_class, :sector, :notes)
+          RETURNING id, ticker, company, shares, purchase_price,
+                    asset_class, sector, added_at
+        `,
+        parameters: [
+          { name: 'user_id',         value: { stringValue: dbUserId } },
+          { name: 'ticker',          value: { stringValue: tickerUpper } },
+          { name: 'company',         value: { stringValue: companyName } },
+          { name: 'shares',          value: { doubleValue: sharesNum } },
+          { name: 'purchase_price',  value: { doubleValue: priceNum } },
+          { name: 'asset_class',     value: { stringValue: asset_class } },
+          { name: 'sector',          value: { stringValue: sector } },
+          { name: 'notes',           value: { stringValue: notes } },
+        ]
+      })) as any
+    }
+
     const record = result.records?.[0]
-    return NextResponse.json({
-      success: true,
-      stock: {
-        id:             record?.[0]?.stringValue,
-        ticker:         record?.[1]?.stringValue,
-        company:        record?.[2]?.stringValue,
-        shares:         record?.[3]?.doubleValue || 0,
-        purchase_price: record?.[4]?.doubleValue || 0,
-        asset_class:    record?.[5]?.stringValue,
-        sector:         record?.[6]?.stringValue,
-        added_at:       record?.[7]?.stringValue,
-      }
-    })
+    const stock = record ? {
+      id:             record[0]?.stringValue,
+      ticker:         record[1]?.stringValue,
+      company:        record[2]?.stringValue,
+      shares:         parseNumber(record[3]),
+      purchase_price: parseNumber(record[4]),
+      asset_class:    record[5]?.stringValue,
+      sector:         record[6]?.stringValue,
+      added_at:       record[7]?.stringValue,
+    } : null
+
+    return NextResponse.json({ success: true, stock })
 
   } catch (error: any) {
     console.error('Portfolio POST error:', error)

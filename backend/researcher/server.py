@@ -19,11 +19,16 @@ from agents import Agent, Runner, trace
 from agents.extensions.models.litellm_model import LitellmModel
 import asyncio
 
+from contextlib import asynccontextmanager
+
 logging.getLogger("LiteLLM").setLevel(logging.CRITICAL)
 
-from prompts import get_agent_instructions, get_deep_research_instructions, DEFAULT_RESEARCH_PROMPT
+from prompts import get_agent_instructions, get_fast_agent_instructions, get_deep_research_instructions, DEFAULT_RESEARCH_PROMPT
 from mcp_servers import create_playwright_mcp_server
 from tools import ingest_financial_document, get_stock_data, get_sec_filings
+from query_trace import QueryTrace, activate_trace, deactivate_trace, record_mcp
+from latency_tracker import LatencyTracker, activate_tracker, deactivate_tracker, get_tracker
+from query_router import classify_query, routing_steps, RouteDecision
 
 GUARDRAIL_ID      = os.getenv("BEDROCK_GUARDRAIL_ID",      "eea439luokx8")
 GUARDRAIL_VERSION = os.getenv("BEDROCK_GUARDRAIL_VERSION", "1")
@@ -46,8 +51,31 @@ app.add_middleware(
 logger     = logging.getLogger(__name__)
 cloudwatch = boto3.client('cloudwatch', region_name='us-east-1')
 
-REGION = "us-east-1"
-MODEL  = "bedrock/us.amazon.nova-pro-v1:0"
+REGION      = "us-east-1"
+MODEL       = "bedrock/us.amazon.nova-pro-v1:0"   # deep / multi
+FAST_MODEL  = os.getenv("FAST_BEDROCK_MODEL", "bedrock/us.amazon.nova-lite-v1:0")
+FAST_TURNS  = int(os.getenv("FAST_MAX_TURNS", "4"))
+
+
+@asynccontextmanager
+async def observe_query(route: str, topic: str, user_id: str, session_id: str, model: str):
+    """Activate per-query trace + latency tracker; flush to Aurora on exit."""
+    tracker = LatencyTracker(
+        query=topic, route=route, clerk_id=user_id,
+        session_id=session_id, model=model,
+    )
+    qtrace  = QueryTrace()
+    tok_tr  = activate_tracker(tracker)
+    tok_qt  = activate_trace(qtrace)
+    try:
+        yield tracker, qtrace
+    except Exception:
+        tracker.success = False
+        raise
+    finally:
+        tracker.flush(qtrace)
+        deactivate_tracker(tok_tr)
+        deactivate_trace(tok_qt)
 
 
 # ============================================
@@ -96,6 +124,9 @@ class ResearchRequest(BaseModel):
     deep:       bool          = False
     user_id:    Optional[str] = None
     session_id: Optional[str] = None
+    intent:     Optional[str] = None
+    debater:    Optional[str] = None
+    ticker:     Optional[str] = None
 
 
 # ============================================
@@ -138,7 +169,7 @@ def should_apply_guardrail(query: str, response: str) -> bool:
 # ============================================
 # Guardrail Application
 # ============================================
-async def apply_guardrail(text: str) -> tuple[str, bool]:
+async def apply_guardrail(text: str, query: str = "") -> tuple[str, bool]:
     try:
         loop    = asyncio.get_event_loop()
         bedrock = boto3.client('bedrock-runtime', region_name=REGION)
@@ -156,6 +187,10 @@ async def apply_guardrail(text: str) -> tuple[str, bool]:
         if response['action'] == 'GUARDRAIL_INTERVENED':
             print("Guardrail blocked response")
             emit_metric('GuardrailBlock', 1)
+            reason = "Bedrock guardrail blocked non-financial output"
+            log_guardrail_observation(
+                query, reason, agent_name="bedrock_guardrail", route="output",
+            )
             return (
                 "I can only help with financial research topics. "
                 "Please ask about stocks, markets, or investment analysis.",
@@ -170,21 +205,67 @@ async def apply_guardrail(text: str) -> tuple[str, bool]:
         return (text, False)
 
 
+def log_guardrail_observation(
+    query: str,
+    reason: str,
+    agent_name: str = "alex_guardrail",
+    route: str = "chat",
+    latency_ms: int = 0,
+) -> None:
+    """Persist guardrail hit to agent_observations for /observe."""
+    if not CLUSTER_ARN or not SECRET_ARN:
+        return
+    try:
+        rds = boto3.client("rds-data", region_name=REGION)
+        rds.execute_statement(
+            resourceArn=CLUSTER_ARN,
+            secretArn=SECRET_ARN,
+            database=DB_NAME,
+            sql="""
+                INSERT INTO agent_observations
+                    (agent_name, ticker, simulation_id, model_id,
+                     input_tokens, output_tokens, total_tokens, latency_ms,
+                     cost_usd, action, confidence, success, error_message,
+                     guardrail_triggered, guardrail_action)
+                VALUES
+                    (:agent, :ticker, :sim::uuid, :model,
+                     0, 0, 0, :latency,
+                     0, :action, 1.0, true, :query,
+                     true, :reason)
+            """,
+            parameters=[
+                {"name": "agent",   "value": {"stringValue": agent_name}},
+                {"name": "ticker",  "value": {"stringValue": ""}},
+                {"name": "sim",     "value": {"stringValue": "00000000-0000-0000-0000-000000000000"}},
+                {"name": "model",   "value": {"stringValue": route}},
+                {"name": "latency", "value": {"longValue": latency_ms}},
+                {"name": "action",  "value": {"stringValue": "BLOCK"}},
+                {"name": "query",   "value": {"stringValue": (query or "")[:500]}},
+                {"name": "reason",  "value": {"stringValue": reason[:500]}},
+            ],
+        )
+        logger.info(f"Guardrail logged: {agent_name} — {reason[:80]}")
+    except Exception as e:
+        logger.warning(f"Guardrail observation log failed (non-fatal): {e}")
+
+
 # ============================================
 # Context Helper
 # ============================================
-def get_context(topic: str, user_id: str, session_id: str) -> str:
+def get_context(topic: str, user_id: str, session_id: str, fast: bool = False) -> str:
     """Get pgvector context — non-fatal if fails."""
     if not user_id:
         return ""
     try:
         from context_service import build_full_context
+        t0      = time.time()
         context = build_full_context(
             query      = topic,
             user_id    = user_id,
-            session_id = session_id
+            session_id = session_id,
+            fast       = fast,
         )
-        print(f"Context built: {len(context)} chars")
+        print(f"Context built: {len(context)} chars in {time.time() - t0:.1f}s (fast={fast})")
         return context
     except Exception as e:
         print(f"Context error (non-fatal): {e}")
@@ -203,6 +284,120 @@ def save_session(user_id: str, session_id: str, topic: str, response: str):
         print(f"Session save error (non-fatal): {e}")
 
 
+async def stream_response_tokens(filtered_response: str, chunk_size: int = 4, delay_s: float = 0.028):
+    """Yield SSE tokens in small chunks for visible streaming UX."""
+    words = filtered_response.split(' ')
+    for i in range(0, len(words), chunk_size):
+        chunk = ' '.join(words[i:i + chunk_size]) + (' ' if i + chunk_size < len(words) else '')
+        yield f"data: {json.dumps({'type': 'token', 'content': chunk})}\n\n"
+        if delay_s > 0:
+            await asyncio.sleep(delay_s)
+
+
+def _conversation_canned_reply(query: str, intent: str) -> Optional[str]:
+    """Instant replies — no Bedrock call."""
+    if intent == "policy_flag":
+        return (
+            "🛡️ **I can't help with aggressive trading strategies or personalized short recommendations.**\n\n"
+            "Alex is a **research assistant**, not a trading advisor. Short selling carries "
+            "unlimited loss potential and is not suitable for most investors.\n\n"
+            "I *can* help with:\n"
+            "- *What is short selling?* — educational explanation\n"
+            "- *TSLA short interest and latest news* — factual research\n"
+            "- *Compare NVDA vs AMD* — deep analysis\n\n"
+            "_Not financial advice. Consult a licensed advisor before any trading decisions._"
+        )
+    if intent == "off_topic":
+        return (
+            "I'm Alex, your AI **financial research** assistant — I focus on stocks, "
+            "bonds, markets, and portfolio topics.\n\n"
+            "I can't help with that one, but try asking:\n"
+            "- *Tell me about bonds*\n"
+            "- *What is NVDA trading at?* (live research)\n"
+            "- *Compare NVDA vs AMD* (deep research)"
+        )
+    from query_router import _has_finance_topic, _has_educational_frame, _is_off_topic
+    if _is_off_topic(query) or (_has_educational_frame(query) and not _has_finance_topic(query)):
+        return (
+            "I'm Alex, your AI **financial research** assistant — I focus on stocks, "
+            "bonds, markets, and portfolio topics.\n\n"
+            "That question is outside my scope. Ask me about investing, markets, or a specific stock!"
+        )
+    return None
+
+
+def _build_conversation_prompt(query: str, user_id: str, session_id: str, intent: str) -> tuple[str, int]:
+    """Lightweight prompt for chat — skip DB context on education for speed."""
+    conv = ""
+    if intent not in ("education", "greeting"):
+        try:
+            from context_service import get_conversation_context
+            conv = get_conversation_context(user_id, session_id, limit=4)
+        except Exception:
+            pass
+
+    is_edu = intent in ("education", "conversation", "general", "greeting")
+    max_tokens = 550 if is_edu else 400
+
+    prompt = f"""You are Alex, a warm AI financial assistant.
+
+{conv}
+
+User: {query}
+
+Instructions:
+- ONLY financial/investing topics. Politely decline anything else.
+- Answer in clear markdown. For education: 2-3 short paragraphs max, use bullets if helpful.
+- No buy/sell recommendations. Be accurate and concise."""
+    return prompt, max_tokens
+
+
+_STREAM_DONE = object()
+
+
+async def stream_bedrock_conversation(prompt: str, max_tokens: int = 550):
+    """Yield Nova Lite text tokens as they arrive."""
+    model_id = FAST_MODEL.replace("bedrock/", "")
+    body = json.dumps({
+        "messages": [{"role": "user", "content": [{"text": prompt}]}],
+        "inferenceConfig": {"maxTokens": max_tokens, "temperature": 0.4},
+    })
+
+    queue: asyncio.Queue = asyncio.Queue()
+    loop = asyncio.get_running_loop()
+
+    def _produce() -> None:
+        try:
+            bedrock = boto3.client("bedrock-runtime", region_name=REGION)
+            resp = bedrock.invoke_model_with_response_stream(
+                modelId=model_id,
+                contentType="application/json",
+                accept="application/json",
+                body=body,
+            )
+            # EventStream is iterable via `for`, not `next()` — using next() raises TypeError
+            for event in resp["body"]:
+                chunk = json.loads(event["chunk"]["bytes"])
+                if "contentBlockDelta" in chunk:
+                    text = chunk["contentBlockDelta"]["delta"].get("text", "")
+                    if text:
+                        asyncio.run_coroutine_threadsafe(queue.put(text), loop).result()
+        except Exception as exc:
+            asyncio.run_coroutine_threadsafe(queue.put(exc), loop).result()
+        finally:
+            asyncio.run_coroutine_threadsafe(queue.put(_STREAM_DONE), loop).result()
+
+    loop.run_in_executor(None, _produce)
+
+    while True:
+        item = await queue.get()
+        if item is _STREAM_DONE:
+            break
+        if isinstance(item, Exception):
+            raise item
+        yield item
+
+
 # ============================================
 # Fast Research Agent
 # ============================================
@@ -215,11 +410,16 @@ async def run_data_agent(
     os.environ["AWS_REGION"]         = REGION
     os.environ["AWS_DEFAULT_REGION"] = REGION
 
-    model = LitellmModel(model=MODEL)
+    model = LitellmModel(model=FAST_MODEL)
 
-    # Build context from pgvector + history
-    context      = get_context(topic, user_id, session_id)
-    instructions = get_agent_instructions()
+    # Build context from pgvector + history (fast path skips RAG embed)
+    t0           = time.time()
+    context      = get_context(topic, user_id, session_id, fast=True)
+    ctx_ms       = int((time.time() - t0) * 1000)
+    tr           = get_tracker()
+    if tr:
+        tr.mark_context_ms(ctx_ms)
+    instructions = get_fast_agent_instructions()
     if context:
         instructions += f"\n\n{context}"
 
@@ -234,12 +434,17 @@ async def run_data_agent(
         result = await Runner.run(
             agent,
             input     = f"Research this investment topic: {topic}",
-            max_turns = 8,
+            max_turns = FAST_TURNS,
         )
 
-    # Save to session
-    save_session(user_id, session_id, topic, result.final_output)
+    agent_ms = int((time.time() - t0) * 1000)
+    if tr:
+        tr.mark_agent_ms(agent_ms)
+        tr.set_response(result.final_output)
+        tr.set_model(FAST_MODEL)
 
+    print(f"Fast agent done in {agent_ms:.0f}ms (context {ctx_ms}ms)")
+    save_session(user_id, session_id, topic, result.final_output)
     return result.final_output
 
 
@@ -257,31 +462,70 @@ async def run_deep_agent(
 
     model = LitellmModel(model=MODEL)
 
-    # Build context
+    t0           = time.time()
     context      = get_context(topic, user_id, session_id)
+    ctx_ms       = int((time.time() - t0) * 1000)
+    tr           = get_tracker()
+    if tr:
+        tr.mark_context_ms(ctx_ms)
     instructions = get_deep_research_instructions()
     if context:
         instructions += f"\n\n{context}"
 
-    with trace("Alex-Deep-Agent"):
-        async with create_playwright_mcp_server(timeout_seconds=120) as playwright_mcp:
-            agent = Agent(
-                name         = "Alex Deep Researcher",
-                instructions = instructions,
-                model        = model,
-                tools        = [ingest_financial_document, get_sec_filings],
-                mcp_servers  = [playwright_mcp],
-            )
-            result = await Runner.run(
-                agent,
-                input     = f"Deep research: {topic}",
-                max_turns = 20,
-            )
+    record_mcp("playwright-mcp", success=True)
 
-    # Save to session
+    try:
+        with trace("Alex-Deep-Agent"):
+            async with create_playwright_mcp_server(timeout_seconds=120) as playwright_mcp:
+                agent = Agent(
+                    name         = "Alex Deep Researcher",
+                    instructions = instructions,
+                    model        = model,
+                    tools        = [ingest_financial_document, get_sec_filings],
+                    mcp_servers  = [playwright_mcp],
+                )
+                result = await Runner.run(
+                    agent,
+                    input     = f"Deep research: {topic}",
+                    max_turns = 20,
+                )
+    except Exception as e:
+        record_mcp("playwright-mcp", success=False, error=str(e)[:120])
+        raise
+
+    agent_ms = int((time.time() - t0) * 1000)
+    if tr:
+        tr.mark_agent_ms(agent_ms)
+        tr.set_response(result.final_output)
+        tr.set_model(MODEL)
+
     save_session(user_id, session_id, topic, result.final_output)
-
     return result.final_output
+
+
+# ============================================
+# P1 — Query Router + Conversation
+# ============================================
+async def generate_conversation_reply(
+    query: str, user_id: str, session_id: str, intent: str = "conversation",
+) -> str:
+    """Non-streaming fallback for conversation."""
+    canned = _conversation_canned_reply(query, intent)
+    if canned:
+        return canned
+    prompt, max_tokens = _build_conversation_prompt(query, user_id, session_id, intent)
+    bedrock  = boto3.client("bedrock-runtime", region_name=REGION)
+    response = bedrock.invoke_model(
+        modelId=FAST_MODEL.replace("bedrock/", ""),
+        contentType="application/json",
+        accept="application/json",
+        body=json.dumps({
+            "messages": [{"role": "user", "content": [{"text": prompt}]}],
+            "inferenceConfig": {"maxTokens": max_tokens, "temperature": 0.4},
+        }),
+    )
+    result = json.loads(response["body"].read())
+    return result["output"]["message"]["content"][0]["text"]
 
 
 # ============================================
@@ -306,9 +550,176 @@ async def health():
     }
 
 
+@app.post("/research/route")
+async def research_route(request: ResearchRequest):
+    """Classify query — used by unified /api/alex/chat."""
+    topic      = request.topic or ""
+    user_id    = request.user_id or ""
+    session_id = request.session_id or ""
+
+    context_hint = ""
+    if user_id and session_id:
+        try:
+            from context_service import get_conversation_context
+            context_hint = get_conversation_context(user_id, session_id, limit=3)
+        except Exception:
+            pass
+
+    decision = classify_query(topic, context_hint)
+    emit_metric('RouterDecision', 1, dimensions={'Route': decision.route})
+    return {
+        "status":   "success",
+        "routing":  decision.model_dump(),
+        "steps":    routing_steps(decision),
+    }
+
+
+@app.post("/research/conversation/stream")
+async def research_conversation_stream(request: ResearchRequest):
+    topic      = request.topic or ""
+    user_id    = request.user_id or ""
+    session_id = request.session_id or ""
+    intent     = request.intent or "conversation"
+
+    emit_metric('ResearchQuery', 1, dimensions={'Mode': 'chat'})
+
+    tracker = LatencyTracker(
+        query=topic, route='chat', clerk_id=user_id,
+        session_id=session_id, model=FAST_MODEL,
+    )
+    tok_tr = activate_tracker(tracker)
+
+    async def generate():
+        try:
+            yield f"data: {json.dumps({'type': 'reasoning', 'content': '💬 Composing reply...'})}\n\n"
+
+            canned = _conversation_canned_reply(topic, intent)
+            if intent in ("off_topic", "policy_flag"):
+                reason = (
+                    "Router: off-topic query blocked before LLM"
+                    if intent == "off_topic"
+                    else f"Router: policy guardrail — {intent}"
+                )
+                log_guardrail_observation(
+                    topic, reason, agent_name="query_router", route="chat",
+                )
+                tracker.mark_guardrail_ms(1)
+                emit_metric('GuardrailBlock', 1, dimensions={'Mode': 'chat', 'Source': 'router'})
+                label = (
+                    "🛡️ Guardrail applied — polite decline"
+                    if intent == "off_topic"
+                    else "🛡️ Guardrail applied — risky trading intent flagged"
+                )
+                yield f"data: {json.dumps({'type': 'reasoning', 'content': label})}\n\n"
+
+            reply = canned or ""
+            yield f"data: {json.dumps({'type': 'reasoning_done'})}\n\n"
+
+            if canned:
+                tracker.mark_first_token_ms(int((time.monotonic() - tracker.t0) * 1000))
+                async for event in stream_response_tokens(canned, chunk_size=12, delay_s=0):
+                    yield event
+            else:
+                prompt, max_tokens = _build_conversation_prompt(topic, user_id, session_id, intent)
+                reply_parts = []
+                async for token in stream_bedrock_conversation(prompt, max_tokens):
+                    if not reply_parts:
+                        tracker.mark_first_token_ms(int((time.monotonic() - tracker.t0) * 1000))
+                    reply_parts.append(token)
+                    yield f"data: {json.dumps({'type': 'token', 'content': token})}\n\n"
+                reply = "".join(reply_parts)
+
+            if intent not in ("off_topic", "policy_flag"):
+                save_session(user_id, session_id, topic, reply)
+            tracker.set_response(reply)
+            tracker.success = True
+            yield f"data: {json.dumps({'type': 'done', 'route': 'chat', 'latency': round(time.monotonic() - tracker.t0, 1)})}\n\n"
+        except Exception as e:
+            tracker.success = False
+            logger.error(f"Conversation error: {e}")
+            yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
+        finally:
+            tracker.flush()
+            deactivate_tracker(tok_tr)
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "Access-Control-Allow-Origin": "*"},
+    )
+
+
+@app.post("/research/debater/stream")
+async def research_debater_stream(request: ResearchRequest):
+    """Hand off to a Trading Floor debater specialist."""
+    topic      = request.topic or ""
+    user_id    = request.user_id or ""
+    session_id = request.session_id or ""
+    agent_id   = request.debater or ""
+    ticker     = request.ticker
+
+    from debater_registry import get_debater
+    from debater_handoff import run_debater_handoff
+
+    agent = get_debater(agent_id)
+    if not agent:
+        raise HTTPException(status_code=400, detail=f"Unknown debater: {agent_id}")
+
+    emit_metric('ResearchQuery', 1, dimensions={'Mode': 'debater', 'Agent': agent_id})
+
+    tracker = LatencyTracker(
+        query=topic, route='debater', clerk_id=user_id,
+        session_id=session_id, model=FAST_MODEL,
+    )
+    tok_tr = activate_tracker(tracker)
+
+    async def generate():
+        try:
+            handoff = {
+                "id": agent.id, "name": agent.name, "title": agent.title,
+                "expertise": agent.expertise,
+            }
+            yield f"data: {json.dumps({'type': 'handoff', 'debater': handoff})}\n\n"
+            yield f"data: {json.dumps({'type': 'reasoning', 'content': f'🤝 Alex → {agent.name} ({agent.title})'})}\n\n"
+            ticker_note = f" for {ticker}" if ticker else ""
+            yield f"data: {json.dumps({'type': 'reasoning', 'content': f'📊 Fetching market data{ticker_note}...'})}\n\n"
+
+            ctx_t0 = time.monotonic()
+            _, prompt = await run_debater_handoff(agent_id, topic, ticker)
+            tracker.mark_context_ms(int((time.monotonic() - ctx_t0) * 1000))
+
+            yield f"data: {json.dumps({'type': 'reasoning', 'content': f'🧠 {agent.name} analyzing through {agent.title.split()[0]} lens...'})}\n\n"
+            yield f"data: {json.dumps({'type': 'reasoning_done'})}\n\n"
+
+            reply_parts = []
+            async for token in stream_bedrock_conversation(prompt, max_tokens=700):
+                if not reply_parts:
+                    tracker.mark_first_token_ms(int((time.monotonic() - tracker.t0) * 1000))
+                reply_parts.append(token)
+                yield f"data: {json.dumps({'type': 'token', 'content': token})}\n\n"
+
+            reply = "".join(reply_parts)
+            save_session(user_id, session_id, topic, reply)
+            tracker.set_response(reply)
+            tracker.success = True
+            yield f"data: {json.dumps({'type': 'done', 'route': 'debater', 'debater': agent_id, 'latency': round(time.monotonic() - tracker.t0, 1)})}\n\n"
+        except Exception as e:
+            tracker.success = False
+            logger.error(f"Debater handoff error: {e}")
+            yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
+        finally:
+            tracker.flush()
+            deactivate_tracker(tok_tr)
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "Access-Control-Allow-Origin": "*"},
+    )
+
+
 @app.post("/research")
 async def research(request: ResearchRequest):
-    start_time = time.time()
     topic      = request.topic      or "trending financial topics today"
     user_id    = request.user_id    or ""
     session_id = request.session_id or ""
@@ -316,27 +727,26 @@ async def research(request: ResearchRequest):
     emit_metric('ResearchQuery', 1, dimensions={'Mode': 'fast'})
 
     try:
-        response = await run_data_agent(topic, user_id, session_id)
+        async with observe_query('fast', topic, user_id, session_id, FAST_MODEL) as (tracker, _qt):
+            response = await run_data_agent(topic, user_id, session_id)
 
-        print(f"Response length: {len(response)}")
-        print(f"Response preview: {response[:200]}")
+            if should_apply_guardrail(topic, response):
+                g0 = time.time()
+                filtered_response, was_blocked = await apply_guardrail(response, topic)
+                tracker.mark_guardrail_ms(int((time.time() - g0) * 1000))
+                if was_blocked:
+                    emit_metric('GuardrailBlock', 1, dimensions={'Mode': 'fast'})
+            else:
+                filtered_response = response
 
-        if should_apply_guardrail(topic, response):
-            filtered_response, was_blocked = await apply_guardrail(response)
-            if was_blocked:
-                emit_metric('GuardrailBlock', 1, dimensions={'Mode': 'fast'})
-        else:
-            filtered_response = response
-
-        latency = time.time() - start_time
-        emit_metric('ResearchLatency', latency, 'Seconds', {'Mode': 'fast'})
-        emit_metric('ResearchSuccess', 1, dimensions={'Mode': 'fast'})
-
-        print(f"Research complete — {latency:.1f}s")
-        return {"status": "success", "result": filtered_response}
+            tracker.set_response(filtered_response)
+            latency = tracker.total_ms / 1000 if tracker.total_ms else 0
+            emit_metric('ResearchLatency', latency or (time.time()), 'Seconds', {'Mode': 'fast'})
+            emit_metric('ResearchSuccess', 1, dimensions={'Mode': 'fast'})
+            print(f"Research complete — {tracker.total_ms}ms")
+            return {"status": "success", "result": filtered_response}
 
     except Exception as e:
-        latency = time.time() - start_time
         emit_metric('ResearchSuccess', 0, dimensions={'Mode': 'fast'})
         emit_metric('ResearchError',   1, dimensions={'Mode': 'fast'})
         logger.error(f"Research error: {e}")
@@ -347,7 +757,6 @@ async def research(request: ResearchRequest):
 
 @app.post("/research/deep")
 async def research_deep(request: ResearchRequest):
-    start_time = time.time()
     topic      = request.topic      or "latest SEC filings"
     user_id    = request.user_id    or ""
     session_id = request.session_id or ""
@@ -355,27 +764,24 @@ async def research_deep(request: ResearchRequest):
     emit_metric('ResearchQuery', 1, dimensions={'Mode': 'deep'})
 
     try:
-        response = await run_deep_agent(topic, user_id, session_id)
+        async with observe_query('deep', topic, user_id, session_id, MODEL) as (tracker, _qt):
+            response = await run_deep_agent(topic, user_id, session_id)
 
-        print(f"Deep response length: {len(response)}")
-        print(f"Deep response preview: {response[:200]}")
+            if should_apply_guardrail(topic, response):
+                g0 = time.time()
+                filtered_response, was_blocked = await apply_guardrail(response, topic)
+                tracker.mark_guardrail_ms(int((time.time() - g0) * 1000))
+                if was_blocked:
+                    emit_metric('GuardrailBlock', 1, dimensions={'Mode': 'deep'})
+            else:
+                filtered_response = response
 
-        if should_apply_guardrail(topic, response):
-            filtered_response, was_blocked = await apply_guardrail(response)
-            if was_blocked:
-                emit_metric('GuardrailBlock', 1, dimensions={'Mode': 'deep'})
-        else:
-            filtered_response = response
-
-        latency = time.time() - start_time
-        emit_metric('ResearchLatency', latency, 'Seconds', {'Mode': 'deep'})
-        emit_metric('ResearchSuccess', 1, dimensions={'Mode': 'deep'})
-
-        print(f"Deep research complete — {latency:.1f}s")
-        return {"status": "success", "result": filtered_response}
+            tracker.set_response(filtered_response)
+            emit_metric('ResearchSuccess', 1, dimensions={'Mode': 'deep'})
+            print(f"Deep research complete — {tracker.total_ms}ms")
+            return {"status": "success", "result": filtered_response}
 
     except Exception as e:
-        latency = time.time() - start_time
         emit_metric('ResearchSuccess', 0, dimensions={'Mode': 'deep'})
         emit_metric('ResearchError',   1, dimensions={'Mode': 'deep'})
         logger.error(f"Deep research error: {e}")
@@ -384,35 +790,40 @@ async def research_deep(request: ResearchRequest):
 
 @app.post("/research/stream")
 async def research_stream(request: ResearchRequest):
-    start_time = time.time()
     topic      = request.topic      or "trending financial topics today"
     user_id    = request.user_id    or ""
     session_id = request.session_id or ""
 
     emit_metric('ResearchQuery', 1, dimensions={'Mode': 'stream'})
 
+    tracker = LatencyTracker(
+        query=topic, route='stream', clerk_id=user_id,
+        session_id=session_id, model=FAST_MODEL,
+    )
+    qtrace  = QueryTrace()
+    tok_tr  = activate_tracker(tracker)
+    tok_qt  = activate_trace(qtrace)
+
     async def generate():
         try:
             yield f"data: {json.dumps({'type': 'reasoning', 'content': '📊 Fetching live market data...'})}\n\n"
-            await asyncio.sleep(0.1)
-
             yield f"data: {json.dumps({'type': 'reasoning', 'content': '📰 Scanning latest news headlines...'})}\n\n"
-            await asyncio.sleep(0.1)
 
-            # Build context
-            context      = get_context(topic, user_id, session_id)
-            instructions = get_agent_instructions()
+            ctx_t0       = time.time()
+            context      = get_context(topic, user_id, session_id, fast=True)
+            tracker.mark_context_ms(int((time.time() - ctx_t0) * 1000))
+            instructions = get_fast_agent_instructions()
             if context:
                 instructions += f"\n\n{context}"
-                yield f"data: {json.dumps({'type': 'reasoning', 'content': '🧠 Loading your research history...'})}\n\n"
-                await asyncio.sleep(0.1)
+                yield f"data: {json.dumps({'type': 'reasoning', 'content': '🧠 Loading your portfolio context...'})}\n\n"
 
             os.environ["AWS_REGION_NAME"]    = REGION
             os.environ["AWS_REGION"]         = REGION
             os.environ["AWS_DEFAULT_REGION"] = REGION
 
-            model         = LitellmModel(model=MODEL)
+            model         = LitellmModel(model=FAST_MODEL)
             full_response = ""
+            agent_start   = time.time()
 
             with trace("Alex-Stream-Agent"):
                 agent = Agent(
@@ -423,45 +834,51 @@ async def research_stream(request: ResearchRequest):
                     mcp_servers  = [],
                 )
 
-                yield f"data: {json.dumps({'type': 'reasoning', 'content': '🧠 Analyzing with Nova Pro...'})}\n\n"
+                yield f"data: {json.dumps({'type': 'reasoning', 'content': '🧠 Analyzing with Nova Lite...'})}\n\n"
 
-                result = await Runner.run(
+                agent_task = asyncio.create_task(Runner.run(
                     agent,
                     input     = f"Research this investment topic: {topic}",
-                    max_turns = 8,
-                )
+                    max_turns = FAST_TURNS,
+                ))
+                while not agent_task.done():
+                    await asyncio.sleep(0.4)
+                    elapsed_ms = int((time.monotonic() - tracker.t0) * 1000)
+                    yield f"data: {json.dumps({'type': 'tick', 'elapsed_ms': elapsed_ms})}\n\n"
+                result = await agent_task
                 full_response = result.final_output
 
-            print(f"Stream response length: {len(full_response)}")
-
-            # Save to session
+            tracker.mark_agent_ms(int((time.time() - agent_start) * 1000))
             save_session(user_id, session_id, topic, full_response)
 
-            # Smart guardrail
             filtered_response = full_response
             if should_apply_guardrail(topic, full_response):
-                filtered_response, was_blocked = await apply_guardrail(full_response)
+                g0 = time.time()
+                filtered_response, was_blocked = await apply_guardrail(full_response, topic)
+                tracker.mark_guardrail_ms(int((time.time() - g0) * 1000))
                 if was_blocked:
                     emit_metric('GuardrailBlock', 1, dimensions={'Mode': 'stream'})
 
             yield f"data: {json.dumps({'type': 'reasoning_done'})}\n\n"
+            tracker.mark_first_token_ms(int((time.monotonic() - tracker.t0) * 1000))
 
-            # Stream word by word
-            words = filtered_response.split(' ')
-            for i, word in enumerate(words):
-                yield f"data: {json.dumps({'type': 'token', 'content': word + ' '})}\n\n"
-                if i % 3 == 0:
-                    await asyncio.sleep(0.08)
+            async for event in stream_response_tokens(filtered_response):
+                yield event
 
-            latency = time.time() - start_time
-            emit_metric('ResearchLatency', latency, 'Seconds', {'Mode': 'stream'})
+            tracker.set_response(filtered_response)
+            tracker.success = True
             emit_metric('ResearchSuccess', 1, dimensions={'Mode': 'stream'})
-            yield f"data: {json.dumps({'type': 'done', 'latency': round(latency, 1)})}\n\n"
+            yield f"data: {json.dumps({'type': 'done', 'latency': round(time.monotonic() - tracker.t0, 1), 'time_to_answer': round(time.time() - agent_start, 1)})}\n\n"
 
         except Exception as e:
+            tracker.success = False
             logger.error(f"Stream error: {e}")
             emit_metric('ResearchError', 1, dimensions={'Mode': 'stream'})
             yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
+        finally:
+            tracker.flush(qtrace)
+            deactivate_tracker(tok_tr)
+            deactivate_trace(tok_qt)
 
     return StreamingResponse(
         generate(),
@@ -488,29 +905,33 @@ async def research_auto():
 
 @app.post("/research/deep/stream")
 async def research_deep_stream(request: ResearchRequest):
-    start_time = time.time()
     topic      = request.topic      or "latest SEC filings"
     user_id    = request.user_id    or ""
     session_id = request.session_id or ""
 
     emit_metric('ResearchQuery', 1, dimensions={'Mode': 'deep-stream'})
 
+    tracker = LatencyTracker(
+        query=topic, route='deep-stream', clerk_id=user_id,
+        session_id=session_id, model=MODEL,
+    )
+    qtrace  = QueryTrace()
+    tok_tr  = activate_tracker(tracker)
+    tok_qt  = activate_trace(qtrace)
+
     async def generate():
         try:
             yield f"data: {json.dumps({'type': 'reasoning', 'content': '🔌 Connecting to SEC EDGAR...'})}\n\n"
-            await asyncio.sleep(0.1)
             yield f"data: {json.dumps({'type': 'reasoning', 'content': '📄 Fetching 10-K filings...'})}\n\n"
-            await asyncio.sleep(0.1)
             yield f"data: {json.dumps({'type': 'reasoning', 'content': '📊 Reading analyst ratings...'})}\n\n"
-            await asyncio.sleep(0.1)
 
-            # Build context
+            ctx_t0       = time.time()
             context      = get_context(topic, user_id, session_id)
+            tracker.mark_context_ms(int((time.time() - ctx_t0) * 1000))
             instructions = get_deep_research_instructions()
             if context:
                 instructions += f"\n\n{context}"
                 yield f"data: {json.dumps({'type': 'reasoning', 'content': '🧠 Loading prior research context...'})}\n\n"
-                await asyncio.sleep(0.1)
 
             os.environ["AWS_REGION_NAME"]    = REGION
             os.environ["AWS_REGION"]         = REGION
@@ -518,6 +939,7 @@ async def research_deep_stream(request: ResearchRequest):
 
             model         = LitellmModel(model=MODEL)
             full_response = ""
+            agent_start   = time.time()
 
             with trace("Alex-Deep-Stream-Agent"):
                 async with create_playwright_mcp_server(timeout_seconds=120) as playwright_mcp:
@@ -531,39 +953,49 @@ async def research_deep_stream(request: ResearchRequest):
 
                     yield f"data: {json.dumps({'type': 'reasoning', 'content': '🧠 Deep analysis in progress...'})}\n\n"
 
-                    result = await Runner.run(
+                    agent_task = asyncio.create_task(Runner.run(
                         agent,
                         input     = f"Deep research: {topic}",
                         max_turns = 20,
-                    )
+                    ))
+                    while not agent_task.done():
+                        await asyncio.sleep(0.4)
+                        elapsed_ms = int((time.monotonic() - tracker.t0) * 1000)
+                        yield f"data: {json.dumps({'type': 'tick', 'elapsed_ms': elapsed_ms})}\n\n"
+                    result = await agent_task
                     full_response = result.final_output
 
-            # Save to session
+            tracker.mark_agent_ms(int((time.time() - agent_start) * 1000))
             save_session(user_id, session_id, topic, full_response)
 
             filtered_response = full_response
             if should_apply_guardrail(topic, full_response):
-                filtered_response, was_blocked = await apply_guardrail(full_response)
+                g0 = time.time()
+                filtered_response, was_blocked = await apply_guardrail(full_response, topic)
+                tracker.mark_guardrail_ms(int((time.time() - g0) * 1000))
                 if was_blocked:
                     emit_metric('GuardrailBlock', 1, dimensions={'Mode': 'deep-stream'})
 
             yield f"data: {json.dumps({'type': 'reasoning_done'})}\n\n"
+            tracker.mark_first_token_ms(int((time.monotonic() - tracker.t0) * 1000))
 
-            words = filtered_response.split(' ')
-            for i, word in enumerate(words):
-                yield f"data: {json.dumps({'type': 'token', 'content': word + ' '})}\n\n"
-                if i % 3 == 0:
-                    await asyncio.sleep(0.08)
+            async for event in stream_response_tokens(filtered_response, chunk_size=5, delay_s=0.025):
+                yield event
 
-            latency = time.time() - start_time
-            emit_metric('ResearchLatency', latency, 'Seconds', {'Mode': 'deep-stream'})
+            tracker.set_response(filtered_response)
+            tracker.success = True
             emit_metric('ResearchSuccess', 1, dimensions={'Mode': 'deep-stream'})
-            yield f"data: {json.dumps({'type': 'done', 'latency': round(latency, 1)})}\n\n"
+            yield f"data: {json.dumps({'type': 'done', 'latency': round(time.monotonic() - tracker.t0, 1)})}\n\n"
 
         except Exception as e:
+            tracker.success = False
             logger.error(f"Deep stream error: {e}")
             emit_metric('ResearchError', 1, dimensions={'Mode': 'deep-stream'})
             yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
+        finally:
+            tracker.flush(qtrace)
+            deactivate_tracker(tok_tr)
+            deactivate_trace(tok_qt)
 
     return StreamingResponse(
         generate(),

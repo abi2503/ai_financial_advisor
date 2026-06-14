@@ -1,12 +1,14 @@
 """
 Planner Lambda — orchestrates the multi-agent system.
-Breaks complex questions into tasks for specialist agents.
+Breaks complex questions into tasks OR plans portfolio research per stock.
 """
 import os
 import json
 import boto3
 import logging
 from datetime import datetime, timezone
+
+from portfolio_research import dimensions_for_cycle, format_topic
 
 logger = logging.getLogger(__name__)
 UTC    = timezone.utc
@@ -41,7 +43,7 @@ Maximum 5 tasks. Be specific and actionable."""
         contentType = "application/json",
         accept      = "application/json",
         body        = json.dumps({
-            "messages": [{"role": "user", "content": [{"text":prompt}]}],
+            "messages": [{"role": "user", "content": [{"text": prompt}]}],
             "inferenceConfig": {"maxTokens": 500, "temperature": 0}
         })
     )
@@ -57,21 +59,89 @@ Maximum 5 tasks. Be specific and actionable."""
     return json.loads(text.strip())
 
 
+def plan_portfolio_research(body: dict) -> dict:
+    """Queue dimension-specific research tasks for each portfolio holding."""
+    holdings  = body.get('holdings', [])
+    user_id   = body.get('user_id', '')
+    clerk_id  = body.get('clerk_id', '')
+    timestamp = body.get('timestamp', datetime.now(UTC).isoformat())
+
+    if not holdings:
+        return {
+            "statusCode": 200,
+            "body": json.dumps({"message": "No holdings to research", "tasks_queued": 0}),
+        }
+
+    dims         = dimensions_for_cycle()
+    tasks_queued = []
+    task_num     = 0
+
+    for holding in holdings:
+        ticker  = holding.get('ticker', '')
+        company = holding.get('company', ticker)
+        if not ticker:
+            continue
+
+        for dim in dims:
+            task_num += 1
+            topic = format_topic(dim, ticker, company)
+            message = {
+                "task_type":     "portfolio_research",
+                "task_id":       str(task_num),
+                "topic":         topic,
+                "ticker":        ticker,
+                "company":       company,
+                "dimension":     dim["id"],
+                "dimension_label": dim["label"],
+                "research_mode": dim["mode"],
+                "user_id":       user_id,
+                "clerk_id":      clerk_id,
+                "priority":      "high",
+                "timestamp":     timestamp,
+                "source":        "portfolio_planner",
+            }
+            sqs.send_message(
+                QueueUrl    = RESEARCH_QUEUE_URL,
+                MessageBody = json.dumps(message),
+            )
+            tasks_queued.append(f"{ticker}:{dim['id']}")
+            logger.info(f"Queued portfolio task: {ticker} / {dim['id']} ({dim['mode']})")
+
+    return {
+        "statusCode": 200,
+        "body": json.dumps({
+            "task":         "portfolio_research",
+            "user_id":      user_id,
+            "tasks_queued": tasks_queued,
+            "task_count":   len(tasks_queued),
+            "dimensions":   [d["id"] for d in dims],
+            "timestamp":    timestamp,
+            "message":      f"Queued {len(tasks_queued)} portfolio research tasks",
+        }),
+    }
+
+
 def lambda_handler(event, context):
     if isinstance(event.get('body'), str):
         body = json.loads(event['body'])
     else:
         body = event.get('body', event)
 
+    # Portfolio research mode — triggered by scheduler
+    if body.get('task') == 'portfolio_research':
+        logger.info(f"Portfolio research for user {body.get('clerk_id')}")
+        return plan_portfolio_research(body)
+
     question       = body.get('question', '')
-    # Get correlationId from frontend request
     correlation_id = body.get('correlationId', '')
+    user_id        = body.get('user_id', '') or body.get('clerk_id', '')
+    session_id     = body.get('session_id', '')
     timestamp      = datetime.now(UTC).isoformat()
 
     if not question:
         return {
             "statusCode": 400,
-            "body": json.dumps({"error": "Missing question"})
+            "body": json.dumps({"error": "Missing question"}),
         }
 
     logger.info(f"Planning: {question}")
@@ -89,11 +159,14 @@ def lambda_handler(event, context):
             "priority":      task['priority'],
             "timestamp":     timestamp,
             "source":        "planner",
-            "correlationId": correlation_id  # ← pass through
+            "correlationId": correlation_id,
+            "user_id":       user_id,
+            "clerk_id":      user_id,
+            "session_id":    session_id,
         }
         sqs.send_message(
             QueueUrl    = RESEARCH_QUEUE_URL,
-            MessageBody = json.dumps(message)
+            MessageBody = json.dumps(message),
         )
         tasks_queued.append(task['topic'])
         logger.info(f"Queued: {task['topic']}")
@@ -105,6 +178,6 @@ def lambda_handler(event, context):
             "tasks_queued": tasks_queued,
             "task_count":   len(tasks_queued),
             "timestamp":    timestamp,
-            "message":      f"Queued {len(tasks_queued)} research tasks"
-        })
+            "message":      f"Queued {len(tasks_queued)} research tasks",
+        }),
     }

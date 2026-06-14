@@ -34,6 +34,32 @@ function parseVal(field: any): any {
   return Object.values(field)[0] ?? null
 }
 
+function enrichPosition(row: {
+  ticker: string
+  shares: number
+  avg_cost: number
+  current_price: number
+  current_value: number
+  pnl: number
+  pnl_pct: number
+  last_action: string | null
+}) {
+  const shares       = row.shares || 0
+  const avgCost      = row.avg_cost || 0
+  const currentPrice = row.current_price || 0
+  const costBasis    = shares * avgCost
+  const marketValue  = shares * currentPrice
+  const pnl          = marketValue - costBasis
+  const pnlPct       = costBasis > 0 ? (pnl / costBasis) * 100 : 0
+  return {
+    ...row,
+    cost_basis:    costBasis,
+    current_value: marketValue,
+    pnl,
+    pnl_pct: pnlPct,
+  }
+}
+
 export async function GET(req: NextRequest) {
   const { userId } = await auth()
   if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
@@ -74,7 +100,7 @@ export async function GET(req: NextRequest) {
       [{ name: 'uid', value: { stringValue: userId } }]
     )
 
-    const positions = (posResult?.records || []).map(row => ({
+    const positions = (posResult?.records || []).map(row => enrichPosition({
       ticker:        parseVal(row[0]),
       shares:        parseInt(String(parseVal(row[1]) || 0)),
       avg_cost:      parseFloat(String(parseVal(row[2]) || 0)),
@@ -95,17 +121,30 @@ export async function GET(req: NextRequest) {
       [{ name: 'uid', value: { stringValue: userId } }]
     )
 
+    const portfolioSummary = {
+      total_market_value: positions.reduce((s, p) => s + p.current_value, 0),
+      total_cost_basis:   positions.reduce((s, p) => s + p.cost_basis, 0),
+      total_pnl:          0,
+      total_pnl_pct:      0,
+      position_count:     positions.length,
+    }
+    portfolioSummary.total_pnl = portfolioSummary.total_market_value - portfolioSummary.total_cost_basis
+    portfolioSummary.total_pnl_pct = portfolioSummary.total_cost_basis > 0
+      ? (portfolioSummary.total_pnl / portfolioSummary.total_cost_basis) * 100
+      : 0
+
     const sim = simResult?.records?.[0] ? {
       total_pnl:     parseFloat(String(parseVal(simResult.records[0][0]) || 0)),
       total_trades:  parseInt(String(parseVal(simResult.records[0][1]) || 0)),
       win_count:     parseInt(String(parseVal(simResult.records[0][2]) || 0)),
-      current_value: parseFloat(String(parseVal(simResult.records[0][3]) || 0)),
+      current_value: positions.reduce((sum, p) => sum + p.current_value, 0) ||
+                     parseFloat(String(parseVal(simResult.records[0][3]) || 0)),
       mode:          parseVal(simResult.records[0][4]),
     } : null
 
-    return NextResponse.json({ trades, positions, simulation: sim })
+    return NextResponse.json({ trades, positions, simulation: sim, portfolio_summary: portfolioSummary })
   } catch (error) {
     console.error('Trading API error:', error)
-    return NextResponse.json({ trades: [], positions: [], simulation: null, error: 'DB unavailable' })
+    return NextResponse.json({ trades: [], positions: [], simulation: null, portfolio_summary: null, error: 'DB unavailable' })
   }
 }

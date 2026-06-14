@@ -2,7 +2,7 @@
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { UserButton } from '@clerk/nextjs'
-import { Brain, LayoutDashboard, MessageSquare, PieChart, History, BarChart2, Calculator } from 'lucide-react'
+import { Brain, LayoutDashboard, MessageSquare, PieChart, History, BarChart2, Calculator, Telescope } from 'lucide-react'
 
 const navItems = [
   { href: '/dashboard',  label: 'Dashboard',  icon: LayoutDashboard },
@@ -11,6 +11,7 @@ const navItems = [
   { href: '/charts',     label: 'Charts',     icon: BarChart2 },
   { href: '/retirement', label: 'Retirement', icon: Calculator },
   { href: '/history',    label: 'History',    icon: History },
+  { href: '/observe',     label: 'Observe',    icon: Telescope },
 ]
 
 export default function Navbar() {

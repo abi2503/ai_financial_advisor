@@ -50,11 +50,9 @@ export default function PortfolioPage() {
   const [pricesLoading, setPricesLoading] = useState(false)
   const [showAdd,       setShowAdd]       = useState(false)
   const [ticker,        setTicker]        = useState('')
-  const [company,       setCompany]       = useState('')
   const [shares,        setShares]        = useState('')
   const [purchasePrice, setPurchasePrice] = useState('')
   const [assetClass,    setAssetClass]    = useState('stocks')
-  const [sector,        setSector]        = useState('')
   const [adding,        setAdding]        = useState(false)
   const [error,         setError]         = useState('')
   const [lastUpdated,   setLastUpdated]   = useState<string>('')
@@ -132,27 +130,23 @@ export default function PortfolioPage() {
   }
 
   async function handleAddStock() {
-    if (!ticker || !company) return
+    if (!ticker) return
     setAdding(true)
     try {
       await axios.post('/api/portfolio', {
         ticker,
-        company,
         shares:         parseFloat(shares) || 0,
         purchase_price: parseFloat(purchasePrice) || 0,
         asset_class:    assetClass,
-        sector,
       })
       await fetchPortfolio()
       setTicker('')
-      setCompany('')
       setShares('')
       setPurchasePrice('')
       setAssetClass('stocks')
-      setSector('')
       setShowAdd(false)
     } catch (err: any) {
-      setError('Failed to add stock')
+      setError(err.response?.data?.error || 'Failed to add stock')
     } finally {
       setAdding(false)
     }
@@ -179,6 +173,7 @@ export default function PortfolioPage() {
     return sum + (stock.shares * stock.purchase_price)
   }, 0)
 
+  const totalGainDollar = totalValue - totalCost
   const totalGainPct = totalCost > 0
     ? (((totalValue - totalCost) / totalCost) * 100).toFixed(2)
     : null
@@ -195,27 +190,29 @@ export default function PortfolioPage() {
             <p className="text-gray-400 text-sm mt-1">
               {loading ? 'Loading...' : (
                 <>
-                  {portfolio.length} positions · <span className="text-white font-semibold">${totalValue.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span>
-                  {totalCost > 0 && (
-                    <span className={`ml-2 text-sm font-medium ${parseFloat(totalGainPct || '0') >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                      {parseFloat(totalGainPct || '0') >= 0 ? '' : ''}{totalGainPct}% total return
-                    </span>
-                  )}
+                  {portfolio.length} positions
                   {totalValue > 0 && (
-                    <span className="ml-2 text-white font-medium">
-                      · ${totalValue.toLocaleString('en-US', {
-                        minimumFractionDigits: 2,
-                        maximumFractionDigits: 2
-                      })}
-                    </span>
+                    <>
+                      <span className="mx-2 text-gray-600">·</span>
+                      <span className="text-white font-semibold">
+                        ${totalValue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </span>
+                      <span className="text-gray-500 text-xs ml-1">market value</span>
+                    </>
+                  )}
+                  {totalCost > 0 && (
+                    <>
+                      <span className="mx-2 text-gray-600">·</span>
+                      <span className="text-gray-300">
+                        ${totalCost.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </span>
+                      <span className="text-gray-500 text-xs ml-1">cost basis</span>
+                    </>
                   )}
                   {totalGainPct && (
-                    <span className={`ml-2 text-sm ${
-                      parseFloat(totalGainPct) >= 0
-                        ? 'text-green-400'
-                        : 'text-red-400'
-                    }`}>
-                      {parseFloat(totalGainPct) >= 0 ? '+' : ''}{totalGainPct}%
+                    <span className={`ml-2 text-sm font-medium ${parseFloat(totalGainPct) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                      {parseFloat(totalGainPct) >= 0 ? '+' : ''}${totalGainDollar.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      {' '}({parseFloat(totalGainPct) >= 0 ? '+' : ''}{totalGainPct}%)
                     </span>
                   )}
                 </>
@@ -251,6 +248,77 @@ export default function PortfolioPage() {
         {error && (
           <div className="mb-4 p-3 bg-red-500/10 border border-red-500/20 rounded-lg text-red-400 text-sm">
             {error}
+          </div>
+        )}
+
+        {!loading && portfolio.length > 0 && (
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
+            {[
+              { label: 'Total Holding', value: `$${totalValue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, sub: 'shares × current price', color: 'text-white' },
+              { label: 'Cost Basis', value: `$${totalCost.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, sub: 'shares × avg cost', color: 'text-gray-300' },
+              { label: 'Total P&L', value: `${totalGainDollar >= 0 ? '+' : ''}$${totalGainDollar.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, sub: 'market − cost', color: totalGainDollar >= 0 ? 'text-green-400' : 'text-red-400' },
+              { label: 'Return', value: totalGainPct ? `${parseFloat(totalGainPct) >= 0 ? '+' : ''}${totalGainPct}%` : '—', sub: 'portfolio gain/loss', color: totalGainPct && parseFloat(totalGainPct) >= 0 ? 'text-green-400' : 'text-red-400' },
+            ].map(stat => (
+              <div key={stat.label} className="bg-gray-900 border border-gray-800 rounded-xl p-4">
+                <p className="text-xs text-gray-500 mb-1">{stat.label}</p>
+                <p className={`text-xl font-bold ${stat.color}`}>{stat.value}</p>
+                <p className="text-xs text-gray-600 mt-1">{stat.sub}</p>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {!loading && portfolio.length > 0 && (
+          <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden mb-6">
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="border-b border-gray-800 text-gray-500 uppercase tracking-wider">
+                    <th className="text-left p-3">Ticker</th>
+                    <th className="text-right p-3">Shares</th>
+                    <th className="text-right p-3">Avg Cost</th>
+                    <th className="text-right p-3">Price</th>
+                    <th className="text-right p-3">Total Holding</th>
+                    <th className="text-right p-3">Cost Basis</th>
+                    <th className="text-right p-3">P&L</th>
+                    <th className="text-right p-3">Return</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {portfolio.map(stock => {
+                    const price = prices[stock.ticker]
+                    const currentPrice = parseFloat(price?.price || '0')
+                    const marketValue = stock.shares * currentPrice
+                    const costBasis = stock.shares * stock.purchase_price
+                    const pnl = marketValue - costBasis
+                    const pnlPct = costBasis > 0 ? (pnl / costBasis) * 100 : 0
+                    const up = pnl >= 0
+                    if (stock.shares <= 0) return null
+                    return (
+                      <tr key={stock.id} className="border-b border-gray-800/50">
+                        <td className="p-3 font-bold text-white">{stock.ticker}</td>
+                        <td className="p-3 text-right text-gray-300">{stock.shares}</td>
+                        <td className="p-3 text-right text-gray-400">${stock.purchase_price.toFixed(2)}</td>
+                        <td className="p-3 text-right text-gray-300">{price ? `$${currentPrice.toFixed(2)}` : '—'}</td>
+                        <td className="p-3 text-right text-white font-medium">{price ? `$${marketValue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '—'}</td>
+                        <td className="p-3 text-right text-gray-400">${costBasis.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                        <td className={`p-3 text-right font-medium ${up ? 'text-green-400' : 'text-red-400'}`}>{price ? `${up ? '+' : ''}$${pnl.toFixed(2)}` : '—'}</td>
+                        <td className={`p-3 text-right font-medium ${up ? 'text-green-400' : 'text-red-400'}`}>{price && costBasis > 0 ? `${up ? '+' : ''}${pnlPct.toFixed(1)}%` : '—'}</td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+                <tfoot>
+                  <tr className="bg-gray-950 border-t border-blue-800/40">
+                    <td colSpan={4} className="p-3 font-semibold text-blue-300">Portfolio Total</td>
+                    <td className="p-3 text-right font-bold text-white">${totalValue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                    <td className="p-3 text-right font-bold text-gray-300">${totalCost.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                    <td className={`p-3 text-right font-bold ${totalGainDollar >= 0 ? 'text-green-400' : 'text-red-400'}`}>{totalGainDollar >= 0 ? '+' : ''}${totalGainDollar.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                    <td className={`p-3 text-right font-bold ${totalGainPct && parseFloat(totalGainPct) >= 0 ? 'text-green-400' : 'text-red-400'}`}>{totalGainPct ? `${parseFloat(totalGainPct) >= 0 ? '+' : ''}${totalGainPct}%` : '—'}</td>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
           </div>
         )}
 
@@ -400,16 +468,17 @@ export default function PortfolioPage() {
                   )}
 
                   {/* Position P&L row */}
-                  {stock.shares > 0 && stock.purchase_price > 0 && price && (
-                    <div className="mt-2 pt-2 border-t border-gray-800 grid grid-cols-3 gap-4 text-xs">
+                  {stock.shares > 0 && price && (
+                    <div className="mt-2 pt-2 border-t border-gray-800 grid grid-cols-2 md:grid-cols-4 gap-4 text-xs">
                       <div>
-                        <span className="text-gray-600">Position Value</span>
+                        <span className="text-gray-600">Market Value</span>
                         <div className="text-white font-medium">
                           ${currentValue.toLocaleString('en-US', {
                             minimumFractionDigits: 2,
                             maximumFractionDigits: 2
                           })}
                         </div>
+                        <div className="text-gray-600">{stock.shares} × ${currentPrice.toFixed(2)}</div>
                       </div>
                       <div>
                         <span className="text-gray-600">Cost Basis</span>
@@ -419,19 +488,26 @@ export default function PortfolioPage() {
                             maximumFractionDigits: 2
                           })}
                         </div>
+                        <div className="text-gray-600">{stock.shares} × ${stock.purchase_price.toFixed(2)}</div>
                       </div>
                       <div>
-                        <span className="text-gray-600">Total Gain/Loss</span>
+                        <span className="text-gray-600">P&L</span>
                         <div className={
                           parseFloat(gainLossPct || '0') >= 0
-                            ? 'text-green-400'
-                            : 'text-red-400'
+                            ? 'text-green-400 font-medium'
+                            : 'text-red-400 font-medium'
                         }>
-                          {parseFloat(gainLossPct || '0') >= 0 ? '+' : ''}
-                          {gainLossPct}%
-                          <span className="text-gray-500 ml-1">
-                            (${gainLossDollar})
-                          </span>
+                          {parseFloat(gainLossPct || '0') >= 0 ? '+' : ''}${gainLossDollar}
+                        </div>
+                      </div>
+                      <div>
+                        <span className="text-gray-600">Return</span>
+                        <div className={
+                          parseFloat(gainLossPct || '0') >= 0
+                            ? 'text-green-400 font-medium'
+                            : 'text-red-400 font-medium'
+                        }>
+                          {parseFloat(gainLossPct || '0') >= 0 ? '+' : ''}{gainLossPct}%
                         </div>
                       </div>
                     </div>
@@ -503,12 +579,6 @@ export default function PortfolioPage() {
                   placeholder="Ticker (e.g. NVDA)"
                   className="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white text-sm placeholder-gray-500 focus:outline-none focus:border-blue-500"
                 />
-                <input
-                  value={company}
-                  onChange={e => setCompany(e.target.value)}
-                  placeholder="Company name (e.g. NVIDIA Corporation)"
-                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white text-sm placeholder-gray-500 focus:outline-none focus:border-blue-500"
-                />
                 <div className="grid grid-cols-2 gap-3">
                   <input
                     value={shares}
@@ -542,15 +612,9 @@ export default function PortfolioPage() {
                   <option value="commodities">🥇 Commodities</option>
                   <option value="cash">💵 Cash</option>
                 </select>
-                <input
-                  value={sector}
-                  onChange={e => setSector(e.target.value)}
-                  placeholder="Sector (e.g. Technology)"
-                  className="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-white text-sm placeholder-gray-500 focus:outline-none focus:border-blue-500"
-                />
                 <button
                   onClick={handleAddStock}
-                  disabled={adding || !ticker || !company}
+                  disabled={adding || !ticker}
                   className="w-full py-3 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 rounded-lg text-white text-sm font-medium transition flex items-center justify-center gap-2"
                 >
                   {adding

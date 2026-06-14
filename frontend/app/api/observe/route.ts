@@ -33,6 +33,53 @@ function val(field: any): any {
   return Object.values(field)[0] ?? null
 }
 
+function parseTools(raw: unknown): { name: string; success: boolean; error?: string; latency_ms?: number }[] {
+  if (!Array.isArray(raw)) return []
+  return raw.map(t => {
+    if (typeof t === 'string') return { name: t, success: true }
+    const o = t as Record<string, unknown>
+    return {
+      name:       String(o.name || ''),
+      success:    o.success !== false,
+      error:      o.error ? String(o.error) : undefined,
+      latency_ms: typeof o.latency_ms === 'number' ? o.latency_ms : undefined,
+    }
+  })
+}
+
+function parseMcps(raw: unknown): { name: string; success: boolean; error?: string }[] {
+  if (!Array.isArray(raw)) return []
+  return raw.map(m => {
+    if (typeof m === 'string') return { name: m, success: true }
+    const o = m as Record<string, unknown>
+    return { name: String(o.name || ''), success: o.success !== false, error: o.error ? String(o.error) : undefined }
+  })
+}
+
+function parseApis(raw: unknown): { name: string; url: string; latency_ms: number; success: boolean; error?: string }[] {
+  if (!Array.isArray(raw)) return []
+  return raw.map(a => {
+    const o = a as Record<string, unknown>
+    return {
+      name:       String(o.name || ''),
+      url:        String(o.url || ''),
+      latency_ms: typeof o.latency_ms === 'number' ? o.latency_ms : 0,
+      success:    o.success !== false,
+      error:      o.error ? String(o.error) : undefined,
+    }
+  })
+}
+
+function passFailSummary(tools: ReturnType<typeof parseTools>, mcps: ReturnType<typeof parseMcps>, apis: ReturnType<typeof parseApis>) {
+  const tp = tools.filter(t => t.success).length
+  const tf = tools.length - tp
+  const ap = apis.filter(a => a.success).length
+  const af = apis.length - ap
+  const mp = mcps.filter(m => m.success).length
+  const mf = mcps.length - mp
+  return { tools_passed: tp, tools_failed: tf, apis_passed: ap, apis_failed: af, mcps_passed: mp, mcps_failed: mf }
+}
+
 export async function GET(req: NextRequest) {
   const { userId } = await auth()
   if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
@@ -131,9 +178,81 @@ export async function GET(req: NextRequest) {
       calls: parseInt(String(val(row[2]) || 0)),
     }))
 
-    return NextResponse.json({ agents, platform, guardrails, trend })
+    // Research query latency (last 7 days, current user)
+    let querySummary: any[] = []
+    let recentQueries: any[] = []
+    try {
+      const summaryResult = await executeWithRetry(`
+        SELECT
+          q.route,
+          COUNT(*)::int as cnt,
+          ROUND(AVG(q.total_ms))::int as avg_ms,
+          ROUND(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY q.total_ms))::int as p50_ms,
+          ROUND(PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY q.total_ms))::int as p95_ms,
+          ROUND(AVG(q.first_token_ms))::int as avg_first_token_ms
+        FROM query_latency_metrics q
+        JOIN users u ON u.id = q.user_id
+        WHERE u.clerk_id = :clerk_id
+          AND q.created_at > NOW() - INTERVAL '7 days'
+        GROUP BY q.route
+        ORDER BY cnt DESC
+      `, [{ name: 'clerk_id', value: { stringValue: userId } }])
+
+      querySummary = (summaryResult?.records || []).map(row => ({
+        route:             row[0]?.stringValue,
+        count:             parseInt(String(val(row[1]) || 0)),
+        avg_ms:            parseInt(String(val(row[2]) || 0)),
+        p50_ms:            parseInt(String(val(row[3]) || 0)),
+        p95_ms:            parseInt(String(val(row[4]) || 0)),
+        avg_first_token_ms: parseInt(String(val(row[5]) || 0)),
+      }))
+
+      const recentResult = await executeWithRetry(`
+        SELECT
+          q.query_id, q.query, q.route, q.model,
+          q.total_ms, q.first_token_ms, q.context_ms, q.agent_ms, q.guardrail_ms,
+          q.tools_called::text, q.mcp_servers::text, q.data_sources::text,
+          q.response_chars, q.success, q.created_at::text
+        FROM query_latency_metrics q
+        JOIN users u ON u.id = q.user_id
+        WHERE u.clerk_id = :clerk_id
+        ORDER BY q.created_at DESC
+        LIMIT 30
+      `, [{ name: 'clerk_id', value: { stringValue: userId } }])
+
+      recentQueries = (recentResult?.records || []).map(row => {
+        let tools = parseTools([])
+        let mcps  = parseMcps([])
+        let apis  = parseApis([])
+        try { tools = parseTools(JSON.parse(row[9]?.stringValue || '[]')) } catch { /* */ }
+        try { mcps  = parseMcps(JSON.parse(row[10]?.stringValue || '[]')) } catch { /* */ }
+        try { apis  = parseApis(JSON.parse(row[11]?.stringValue || '[]')) } catch { /* */ }
+        return {
+          query_id:       row[0]?.stringValue,
+          query:          row[1]?.stringValue,
+          route:          row[2]?.stringValue,
+          model:          row[3]?.stringValue,
+          total_ms:       parseInt(String(val(row[4]) || 0)),
+          first_token_ms: parseInt(String(val(row[5]) || 0)) || null,
+          context_ms:     parseInt(String(val(row[6]) || 0)),
+          agent_ms:       parseInt(String(val(row[7]) || 0)),
+          guardrail_ms:   parseInt(String(val(row[8]) || 0)),
+          tools,
+          mcp_servers:    mcps,
+          data_sources:   apis,
+          pass_fail:      passFailSummary(tools, mcps, apis),
+          response_chars: parseInt(String(val(row[12]) || 0)),
+          success:        row[13]?.booleanValue ?? true,
+          created_at:     row[14]?.stringValue,
+        }
+      })
+    } catch (e) {
+      console.error('Query metrics unavailable:', e)
+    }
+
+    return NextResponse.json({ agents, platform, guardrails, trend, querySummary, recentQueries })
   } catch (error) {
     console.error('Observe API error:', error)
-    return NextResponse.json({ agents: [], platform: null, guardrails: [], trend: [], error: 'DB unavailable' })
+    return NextResponse.json({ agents: [], platform: null, guardrails: [], trend: [], querySummary: [], recentQueries: [], error: 'DB unavailable' })
   }
 }

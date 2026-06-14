@@ -12,6 +12,13 @@ const DB = {
   database:    process.env.DB_NAME || 'alex_db',
 }
 
+function parseNumber(field: any): number {
+  if (!field) return 0
+  if (field.doubleValue !== undefined) return Number(field.doubleValue)
+  if (field.longValue !== undefined) return Number(field.longValue)
+  return parseFloat(field.stringValue || '0') || 0
+}
+
 export async function GET(req: NextRequest) {
   const { userId } = await auth()
   if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
@@ -20,7 +27,7 @@ export async function GET(req: NextRequest) {
     const result = await rds.send(new ExecuteStatementCommand({
       ...DB,
       sql: `
-        SELECT snapshot_date, total_cost, service_costs, digest
+        SELECT snapshot_date::text, total_cost, service_costs, digest
         FROM cost_snapshots
         ORDER BY snapshot_date DESC
         LIMIT 7
@@ -29,7 +36,7 @@ export async function GET(req: NextRequest) {
 
     const snapshots = (result.records || []).map(row => ({
       date:     row[0]?.stringValue || '',
-      total:    parseFloat(row[1]?.stringValue || '0'),
+      total:    parseNumber(row[1]),
       services: JSON.parse(row[2]?.stringValue || '{}'),
       digest:   row[3]?.stringValue || ''
     }))
@@ -37,7 +44,7 @@ export async function GET(req: NextRequest) {
     const alerts = await rds.send(new ExecuteStatementCommand({
       ...DB,
       sql: `
-        SELECT alert_date, daily_spend, threshold, message
+        SELECT alert_date::text, daily_spend, threshold, message
         FROM cost_alerts
         ORDER BY sent_at DESC
         LIMIT 5
@@ -46,15 +53,18 @@ export async function GET(req: NextRequest) {
 
     const alertsList = (alerts.records || []).map(row => ({
       date:      row[0]?.stringValue || '',
-      spend:     parseFloat(row[1]?.stringValue || '0'),
-      threshold: parseFloat(row[2]?.stringValue || '0'),
+      spend:     parseNumber(row[1]),
+      threshold: parseNumber(row[2]),
       message:   row[3]?.stringValue || ''
     }))
+
+    const todayStr = new Date().toISOString().split('T')[0]
+    const todaySnap = snapshots.find(s => s.date === todayStr) || snapshots[0]
 
     return NextResponse.json({
       snapshots,
       alerts:      alertsList,
-      latest:      snapshots[0] || null,
+      latest:      todaySnap || null,
       weeklyTotal: snapshots.reduce((sum, s) => sum + s.total, 0)
     })
 

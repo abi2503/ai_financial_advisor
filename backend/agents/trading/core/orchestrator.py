@@ -9,8 +9,12 @@ import os
 import json
 import boto3
 import logging
+import sys
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from tools.market_data import get_market_data
 
 logger = logging.getLogger(__name__)
 UTC    = timezone.utc
@@ -52,6 +56,126 @@ def is_trading_enabled():
     return get_ssm('enabled', 'true').lower() == 'true'
 
 
+def compute_position_metrics(shares: float, avg_cost: float, current_price: float) -> dict:
+    cost_basis    = shares * avg_cost
+    current_value = shares * current_price
+    pnl           = current_value - cost_basis
+    pnl_pct       = (pnl / cost_basis * 100) if cost_basis > 0 else 0
+    return {
+        'cost_basis':    cost_basis,
+        'current_value': current_value,
+        'pnl':           pnl,
+        'pnl_pct':       pnl_pct,
+    }
+
+
+def enrich_holding(ticker: str, shares: float, purchase_price: float) -> dict:
+    """Fetch live price and compute market value, cost basis, and P&L."""
+    current_price = purchase_price
+    try:
+        md = get_market_data(ticker)
+        if md and md.price > 0:
+            current_price = md.price
+    except Exception as e:
+        logger.warning(f"Price fetch failed for {ticker}: {e}")
+
+    metrics = compute_position_metrics(shares, purchase_price, current_price)
+    return {
+        'ticker':         ticker,
+        'shares':         shares,
+        'purchase_price': purchase_price,
+        'avg_cost':       purchase_price,
+        'current_price':  current_price,
+        'cost_basis':     metrics['cost_basis'],
+        'total_value':    metrics['current_value'],
+        'pnl':            metrics['pnl'],
+        'pnl_pct':        metrics['pnl_pct'],
+    }
+
+
+def compute_portfolio_summary(portfolio: list) -> dict:
+    """Aggregate per-stock and total portfolio metrics for agents."""
+    active = [h for h in portfolio if h.get('shares', 0) > 0 and h.get('ticker')]
+    total_market = sum(h.get('total_value', 0) for h in active)
+    total_cost   = sum(h.get('cost_basis', 0) for h in active)
+    total_pnl    = total_market - total_cost
+    total_pnl_pct = (total_pnl / total_cost * 100) if total_cost > 0 else 0
+
+    holdings = []
+    for h in active:
+        mv = h.get('total_value', 0)
+        holdings.append({
+            'ticker':        h['ticker'],
+            'shares':        h['shares'],
+            'avg_cost':      h.get('purchase_price', 0),
+            'current_price': h.get('current_price', 0),
+            'market_value':  mv,
+            'cost_basis':    h.get('cost_basis', 0),
+            'pnl':           h.get('pnl', 0),
+            'pnl_pct':       h.get('pnl_pct', 0),
+            'weight_pct':    (mv / total_market * 100) if total_market > 0 else 0,
+        })
+
+    return {
+        'total_market_value': total_market,
+        'total_cost_basis':   total_cost,
+        'total_pnl':          total_pnl,
+        'total_pnl_pct':      total_pnl_pct,
+        'position_count':     len(holdings),
+        'holdings':           holdings,
+    }
+
+
+def sync_agent_positions(sim_id: str, user_id: str, portfolio: list):
+    """Keep agent_positions in sync with live portfolio prices."""
+    total_value = 0
+    for holding in portfolio:
+        if not holding.get('ticker') or holding.get('shares', 0) <= 0:
+            continue
+        total_value += holding.get('total_value', 0)
+        sql(
+            """
+            INSERT INTO agent_positions
+              (simulation_id, user_id, ticker, shares, avg_cost,
+               current_price, current_value, pnl, pnl_pct, last_updated)
+            SELECT :sim::uuid, id, :ticker, :shares, :avg_cost,
+                   :price, :value, :pnl, :pnl_pct, NOW()
+            FROM users WHERE clerk_id = :uid
+            ON CONFLICT (simulation_id, ticker) DO UPDATE SET
+              shares        = EXCLUDED.shares,
+              avg_cost      = EXCLUDED.avg_cost,
+              current_price = EXCLUDED.current_price,
+              current_value = EXCLUDED.current_value,
+              pnl           = EXCLUDED.pnl,
+              pnl_pct       = EXCLUDED.pnl_pct,
+              last_updated  = NOW()
+            """,
+            [
+                {'name': 'sim',      'value': {'stringValue': sim_id}},
+                {'name': 'ticker',   'value': {'stringValue': holding['ticker']}},
+                {'name': 'shares',   'value': {'longValue':   int(holding['shares'])}},
+                {'name': 'avg_cost', 'value': {'doubleValue': holding['purchase_price']}},
+                {'name': 'price',    'value': {'doubleValue': holding['current_price']}},
+                {'name': 'value',    'value': {'doubleValue': holding['total_value']}},
+                {'name': 'pnl',      'value': {'doubleValue': holding['pnl']}},
+                {'name': 'pnl_pct',  'value': {'doubleValue': holding['pnl_pct']}},
+                {'name': 'uid',      'value': {'stringValue': user_id}},
+            ]
+        )
+
+    if total_value > 0:
+        sql(
+            """
+            UPDATE trading_simulations SET current_value = :val, updated_at = NOW()
+            WHERE id = :sim::uuid
+            """,
+            [
+                {'name': 'val', 'value': {'doubleValue': total_value}},
+                {'name': 'sim', 'value': {'stringValue': sim_id}},
+            ]
+        )
+
+
 def get_user_portfolio(user_id: str) -> list:
     """
     Intuition: Before any debate, agents need to know
@@ -61,8 +185,7 @@ def get_user_portfolio(user_id: str) -> list:
     try:
         r = sql(
             """
-            SELECT p.ticker, p.shares, p.purchase_price,
-                   p.purchase_price, (p.shares * p.purchase_price)
+            SELECT p.ticker, p.shares, p.purchase_price
             FROM portfolios p
             JOIN users u ON u.id = p.user_id
             WHERE u.clerk_id = :user_id
@@ -71,13 +194,11 @@ def get_user_portfolio(user_id: str) -> list:
         )
         holdings = []
         for row in r.get('records', []):
-            holdings.append({
-                'ticker':         row[0].get('stringValue', ''),
-                'shares':         row[1].get('longValue', 0),
-                'purchase_price': float(row[2].get('stringValue', '0') or '0'),
-                'current_price':  float(row[3].get('stringValue', '0') or '0'),
-                'total_value':    float(row[4].get('stringValue', '0') or '0'),
-            })
+            ticker = row[0].get('stringValue', '')
+            shares = float(row[1].get('longValue', 0) or row[1].get('stringValue', 0) or 0)
+            purchase_price = float(row[2].get('stringValue', '0') or '0')
+            if ticker and shares > 0:
+                holdings.append(enrich_holding(ticker, shares, purchase_price))
         return holdings
     except Exception as e:
         logger.error(f"Portfolio error: {e}")
@@ -106,10 +227,10 @@ def get_or_create_simulation(user_id: str, mode: str, portfolio: list) -> str:
         if r.get('records'):
             sim_id = r['records'][0][0]['stringValue']
             print(f"Existing simulation: {sim_id}")
+            sync_agent_positions(sim_id, user_id, portfolio)
             return sim_id
 
-        # Create new simulation
-        # Initial value = sum of portfolio
+        # Create new simulation — initial value = sum of market values
         initial_value = sum(h['total_value'] for h in portfolio)
         if initial_value == 0:
             initial_value = 10000  # Default $10k if no portfolio
@@ -140,20 +261,21 @@ def get_or_create_simulation(user_id: str, mode: str, portfolio: list) -> str:
                     """
                     INSERT INTO agent_positions
                       (simulation_id, user_id, ticker, shares, avg_cost,
-                       current_price, current_value, cost_basis)
-                    SELECT :sim, id, :ticker, :shares, :avg_cost,
-                           :price, :value, :basis
+                       current_price, current_value, pnl, pnl_pct)
+                    SELECT :sim::uuid, id, :ticker, :shares, :avg_cost,
+                           :price, :value, :pnl, :pnl_pct
                     FROM users WHERE clerk_id = :uid
                     ON CONFLICT (simulation_id, ticker) DO NOTHING
                     """,
                     [
                         {'name': 'sim',      'value': {'stringValue': sim_id}},
                         {'name': 'ticker',   'value': {'stringValue': holding['ticker']}},
-                        {'name': 'shares',   'value': {'longValue':   holding['shares']}},
+                        {'name': 'shares',   'value': {'longValue':   int(holding['shares'])}},
                         {'name': 'avg_cost', 'value': {'doubleValue': holding['purchase_price']}},
                         {'name': 'price',    'value': {'doubleValue': holding['current_price']}},
                         {'name': 'value',    'value': {'doubleValue': holding['total_value']}},
-                        {'name': 'basis',    'value': {'doubleValue': holding['purchase_price'] * holding['shares']}},
+                        {'name': 'pnl',      'value': {'doubleValue': holding['pnl']}},
+                        {'name': 'pnl_pct',  'value': {'doubleValue': holding['pnl_pct']}},
                         {'name': 'uid',      'value': {'stringValue': user_id}}
                     ]
                 )
@@ -186,6 +308,10 @@ def queue_agent_tasks(sim_id: str, user_id: str, portfolio: list,
             'shares':        holding['shares'],
             'avg_cost':      holding['purchase_price'],
             'current_price': holding['current_price'],
+            'cost_basis':    holding.get('cost_basis', holding['shares'] * holding['purchase_price']),
+            'total_value':   holding['total_value'],
+            'pnl':           holding.get('pnl', 0),
+            'pnl_pct':       holding.get('pnl_pct', 0),
             'mode':          mode,
             'config':        config,
             'timestamp':     datetime.now(UTC).isoformat()
@@ -195,7 +321,6 @@ def queue_agent_tasks(sim_id: str, user_id: str, portfolio: list,
             sqs.send_message(
                 QueueUrl=QUEUE_URL,
                 MessageBody=json.dumps(task),
-                MessageGroupId=sim_id  # FIFO ordering per simulation
             )
             tasks_queued.append(ticker)
             print(f"Queued: {ticker}")
@@ -329,16 +454,22 @@ def lambda_handler(event, context):
         if not sim_id:
             continue
 
+        user_config = {**config, 'portfolio_summary': compute_portfolio_summary(portfolio)}
+        ps = user_config['portfolio_summary']
+        print(f"  Portfolio total: ${ps['total_market_value']:,.0f} | "
+              f"cost ${ps['total_cost_basis']:,.0f} | "
+              f"P&L ${ps['total_pnl']:+,.0f} ({ps['total_pnl_pct']:+.1f}%)")
+
         # Try SQS first, fallback to direct
         if QUEUE_URL:
-            tasks = queue_agent_tasks(sim_id, uid, portfolio, mode, config)
+            tasks = queue_agent_tasks(sim_id, uid, portfolio, mode, user_config)
             all_results.append({
                 'user_id': uid,
                 'sim_id':  sim_id,
                 'queued':  tasks
             })
         else:
-            results = run_direct_analysis(sim_id, uid, portfolio, mode, config)
+            results = run_direct_analysis(sim_id, uid, portfolio, mode, user_config)
             all_results.append({
                 'user_id': uid,
                 'sim_id':  sim_id,

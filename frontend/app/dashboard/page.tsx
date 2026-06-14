@@ -2,80 +2,90 @@ import { RDSDataClient, ExecuteStatementCommand } from '@aws-sdk/client-rds-data
 import { auth, currentUser } from '@clerk/nextjs/server'
 import { redirect } from 'next/navigation'
 import Navbar from '@/components/Navbar'
+import AlexMarkdown from '@/components/AlexMarkdown'
+import OpsCostWidget from '@/components/OpsCostWidget'
 import Link from 'next/link'
-import { Brain, MessageSquare, PieChart, History, Clock, TrendingUp, Zap, BarChart2 } from 'lucide-react'
+import { Brain, MessageSquare, PieChart, History, Clock, TrendingUp, TrendingDown, Minus, Zap, BarChart2 } from 'lucide-react'
 
-async function getAutoResearch() {
-  try {
-    const response = await fetch(
-      `${process.env.NEXT_PUBLIC_ALEX_API!.replace('/ingest', '')}/search`,
-      {
-        method:  'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key':    process.env.ALEX_API_KEY!
-        },
-        body: JSON.stringify({
-          query: 'financial market research stock analysis',
-          top_k: 5
-        }),
-        next: { revalidate: 300 }
+const rds = new RDSDataClient({ region: process.env.AWS_REGION || 'us-east-1' })
+
+const DB = {
+  resourceArn: process.env.DB_CLUSTER_ARN!,
+  secretArn:   process.env.DB_SECRET_ARN!,
+  database:    process.env.DB_NAME || 'alex_db',
+}
+
+function isAuroraResuming(err: unknown): boolean {
+  const e = err as { name?: string; message?: string }
+  return e.name === 'DatabaseResumingException' || !!e.message?.toLowerCase().includes('resuming')
+}
+
+async function executeWithRetry(command: ExecuteStatementCommand, retries = 3) {
+  for (let i = 0; i < retries; i++) {
+    try {
+      return await rds.send(command)
+    } catch (err) {
+      if (isAuroraResuming(err) && i < retries - 1) {
+        console.log(`Aurora resuming — waiting 30s (attempt ${i + 1}/${retries})`)
+        await new Promise(r => setTimeout(r, 30000))
+      } else {
+        throw err
       }
-    )
-    if (!response.ok) return []
-    const data = await response.json()
-    return data.results || []
-  } catch (err) {
-    console.error('Auto research fetch error:', err)
-    return []
+    }
   }
+  throw new Error('Aurora query failed after retries')
 }
 
-function cleanContent(content: string): string {
-  return content
-    .replace(/\*\*/g, '')
-    .replace(/\*/g, '')
-    .replace(/\|.*?\|/g, '')
-    .replace(/#+\s/g, '')
-    .replace(/\n+/g, ' ')
-    .replace(/---+/g, '')
-    .replace(/\[|\]/g, '')
-    .replace(/\(https?:\/\/[^)]+\)/g, '')
-    .replace(/Source:.*$/g, '')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .substring(0, 100) + '...'
-}
-
-async function getCosts() {
+async function getPortfolioDigests(clerkId: string) {
   try {
-    const rds = new RDSDataClient({ region: process.env.AWS_REGION || 'us-east-1' })
-    const result = await rds.send(new ExecuteStatementCommand({
-      resourceArn: process.env.DB_CLUSTER_ARN!,
-      secretArn:   process.env.DB_SECRET_ARN!,
-      database:    process.env.DB_NAME || 'alex_db',
-      sql: `SELECT snapshot_date, total_cost, service_costs, digest FROM cost_snapshots ORDER BY snapshot_date DESC LIMIT 7`
+    const result = await executeWithRetry(new ExecuteStatementCommand({
+      ...DB,
+      sql: `
+        SELECT pd.ticker, pd.company, pd.headline, pd.sentiment,
+               pd.digest, pd.key_news, pd.updated_at::text
+        FROM portfolio_digests pd
+        JOIN users u ON u.id = pd.user_id
+        WHERE u.clerk_id = :clerk_id
+        ORDER BY pd.updated_at DESC
+      `,
+      parameters: [{ name: 'clerk_id', value: { stringValue: clerkId } }],
     }))
     return (result.records || []).map(row => ({
-      date:     row[0]?.stringValue || '',
-      total:    parseFloat(row[1]?.stringValue || '0'),
-      services: JSON.parse(row[2]?.stringValue || '{}'),
-      digest:   row[3]?.stringValue || ''
+      ticker:     row[0]?.stringValue || '',
+      company:    row[1]?.stringValue || '',
+      headline:   row[2]?.stringValue || '',
+      sentiment:  row[3]?.stringValue || 'neutral',
+      digest:     row[4]?.stringValue || '',
+      key_news:   JSON.parse(row[5]?.stringValue || '[]'),
+      updated_at: row[6]?.stringValue || '',
     }))
-  } catch (e) {
+  } catch (err) {
+    console.error('Portfolio digests fetch error:', err)
     return []
   }
+}
+
+function sentimentIcon(sentiment: string) {
+  if (sentiment === 'bullish') return <TrendingUp size={14} className="text-green-400" />
+  if (sentiment === 'bearish') return <TrendingDown size={14} className="text-red-400" />
+  return <Minus size={14} className="text-gray-400" />
+}
+
+function sentimentBadge(sentiment: string) {
+  const styles: Record<string, string> = {
+    bullish: 'bg-green-500/20 text-green-400',
+    bearish: 'bg-red-500/20 text-red-400',
+    neutral: 'bg-gray-500/20 text-gray-400',
+  }
+  return styles[sentiment] || styles.neutral
 }
 
 export default async function Dashboard() {
   const { userId } = await auth()
   if (!userId) redirect('/sign-in')
 
-  const user         = await currentUser()
-  const autoResearch = await getAutoResearch()
-  const costs     = await getCosts()
-  const todayCost = costs[0]?.total || 0
-  const weekCost  = costs.reduce((sum: number, c: any) => sum + c.total, 0)
+  const user            = await currentUser()
+  const portfolioCards  = await getPortfolioDigests(userId)
   const hour         = new Date().getHours()
   const greeting     = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening'
 
@@ -145,13 +155,13 @@ export default async function Dashboard() {
           ))}
         </div>
 
-        {/* Auto Research Results */}
+        {/* Portfolio Research Digests */}
         <div className="bg-gray-900 border border-gray-800 rounded-xl p-6 mb-6">
           <div className="flex items-center justify-between mb-4">
             <div className="flex items-center gap-2">
               <div className="w-2 h-2 bg-green-400 rounded-full animate-pulse" />
               <h2 className="font-semibold text-white">
-                Latest from Alex's Autonomous Research
+                Your Portfolio Research
               </h2>
             </div>
             <div className="flex items-center gap-1 text-gray-500 text-sm">
@@ -160,49 +170,56 @@ export default async function Dashboard() {
             </div>
           </div>
 
-          {autoResearch.length > 0 ? (
-            <div className="grid grid-cols-1 gap-2">
-              {autoResearch.map((item: any) => (
+          {portfolioCards.length > 0 ? (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {portfolioCards.map((card: any) => (
                 <Link
-                  key={item.id}
-                  href={`/research?q=${encodeURIComponent(item.topic)}`}
-                  className="flex items-center gap-4 p-3 bg-gray-800 hover:bg-gray-750 border border-gray-700 hover:border-gray-600 rounded-xl transition"
+                  key={card.ticker}
+                  href={`/research?q=${encodeURIComponent(card.ticker + ' latest news and analysis')}`}
+                  className="block p-4 bg-gray-800 hover:bg-gray-750 border border-gray-700 hover:border-gray-600 rounded-xl transition"
                 >
-                  <Brain size={14} className="text-blue-400 flex-shrink-0" />
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 mb-0.5">
-                      <span className="text-blue-400 text-xs font-medium truncate">
-                        {item.topic}
-                      </span>
+                  <div className="flex items-start justify-between mb-2">
+                    <div className="flex items-center gap-2">
+                      <Brain size={16} className="text-blue-400 flex-shrink-0" />
+                      <span className="text-white font-semibold">{card.ticker}</span>
+                      <span className="text-gray-500 text-xs">{card.company}</span>
                     </div>
-                    <p className="text-gray-400 text-xs truncate">
-                      {cleanContent(item.content)}
-                    </p>
+                    <span className={`text-xs px-2 py-0.5 rounded-full capitalize ${sentimentBadge(card.sentiment)}`}>
+                      {sentimentIcon(card.sentiment)}
+                      {' '}{card.sentiment}
+                    </span>
                   </div>
-                  <div className="text-gray-600 text-xs flex-shrink-0">
-                    {new Date(item.timestamp).toLocaleDateString()}
+                  <p className="text-blue-300 text-sm font-medium mb-2">{card.headline}</p>
+                  <div className="text-gray-400 text-xs mb-2 max-h-24 overflow-hidden">
+                    <AlexMarkdown content={card.digest} />
                   </div>
-                  <TrendingUp size={14} className="text-gray-600 flex-shrink-0" />
+                  {card.key_news?.length > 0 && (
+                    <ul className="text-gray-500 text-xs space-y-0.5 mb-2">
+                      {card.key_news.slice(0, 3).map((item: string, i: number) => (
+                        <li key={i} className="truncate">• {item}</li>
+                      ))}
+                    </ul>
+                  )}
+                  <div className="text-gray-600 text-xs">
+                    {card.updated_at ? new Date(card.updated_at).toLocaleString() : 'Pending first scan'}
+                  </div>
                 </Link>
               ))}
             </div>
           ) : (
-            <div className="grid grid-cols-5 gap-3">
-              {[
-                'Stock Market Movers',
-                'AI Technology News',
-                'Federal Reserve',
-                'Cryptocurrency',
-                'Energy Sector'
-              ].map((topic) => (
-                <Link
-                  key={topic}
-                  href={`/research?q=${encodeURIComponent(topic)}`}
-                  className="bg-gray-800 hover:bg-gray-700 rounded-lg p-3 text-center text-xs text-gray-400 transition"
-                >
-                  {topic}
-                </Link>
-              ))}
+            <div className="text-center py-8">
+              <Brain size={32} className="text-gray-600 mx-auto mb-3" />
+              <p className="text-gray-400 text-sm mb-2">No portfolio research yet</p>
+              <p className="text-gray-600 text-xs mb-4">
+                Add holdings on your portfolio page — Alex will research each stock every 2 hours
+              </p>
+              <Link
+                href="/portfolio"
+                className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded-lg text-white text-sm transition"
+              >
+                <PieChart size={14} />
+                Go to Portfolio
+              </Link>
             </div>
           )}
         </div>
@@ -236,44 +253,9 @@ export default async function Dashboard() {
             <MessageSquare size={16} />
             Open Research Chat
           </Link>
+        </div>
 
-        {/* Cost Monitor Widget */}
-        <div className="bg-gray-900 border border-gray-800 rounded-xl p-6 mt-6">
-          <div className="flex items-center justify-between mb-4">
-            <div className="flex items-center gap-2">
-              <div className={`w-2 h-2 rounded-full ${todayCost > 10 ? 'bg-red-400 animate-pulse' : 'bg-green-400'}`} />
-              <h2 className="font-semibold text-white">AWS Cost Monitor</h2>
-            </div>
-            <span className={`text-xs px-2 py-1 rounded-full ${todayCost > 10 ? 'bg-red-500/20 text-red-400' : todayCost > 5 ? 'bg-yellow-500/20 text-yellow-400' : 'bg-green-500/20 text-green-400'}`}>
-              {todayCost > 10 ? '⚠️ Alert' : todayCost > 5 ? '👀 Monitor' : '✅ On Track'}
-            </span>
-          </div>
-          <div className="grid grid-cols-3 gap-4 mb-4">
-            <div className="bg-gray-800 rounded-lg p-3 text-center">
-      <div className="text-xs text-gray-500 mb-1">Today</div>
-              <div className={`text-lg font-bold ${todayCost > 10 ? 'text-red-400' : 'text-white'}`}>${todayCost.toFixed(2)}</div>
-              <div className="text-xs text-gray-600">threshold: $10</div>
-            </div>
-            <div className="bg-gray-800 rounded-lg p-3 text-center">
-              <div className="text-xs text-gray-500 mb-1">This Week</div>
-              <div className="text-lg font-bold text-white">${weekCost.toFixed(2)}</div>
-              <div className="text-xs text-gray-600">last 7 days</div>
-            </div>
-            <div className="bg-gray-800 rounded-lg p-3 text-center">
-              <div className="text-xs text-gray-500 mb-1">Daily Avg</div>
-              <div className="text-lg font-bold text-white">${costs.length > 0 ? (weekCost / costs.length).toFixed(2) : '0.00'}</div>
-              <div className="text-xs text-gray-600">7-day average</div>
-            </div>
-          </div>
-          {costs[0]?.digest && (
-            <div className="p-3 bg-gray-800 rounded-lg">
-              <div className="text-xs text-gray-500 mb-1">AI Cost Analysis</div>
-              <p className="text-xs text-gray-300 leading-relaxed line-clamp-3">{costs[0].digest}</p>
-            </div>
-          )}
-          <div className="mt-3 text-xs text-gray-600 text-center">Updates daily at 8AM UTC · Alert threshold: $10/day</div>
-        </div>
-        </div>
+        <OpsCostWidget />
 
       </main>
     </div>

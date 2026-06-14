@@ -21,7 +21,7 @@ ALERT_EMAIL    = os.environ.get('ALERT_EMAIL', 'abhishek.suresh2503@gmail.com')
 FROM_EMAIL     = os.environ.get('FROM_EMAIL', 'abhishek.suresh2503@gmail.com')
 FRONTEND_URL   = os.environ.get('FRONTEND_URL', 'https://ai-financial-advisor-t6kt-abi2503s-projects.vercel.app')
 ALB_URL        = os.environ.get('ALB_URL', '')
-COST_THRESHOLD = float(os.environ.get('DAILCOST_THRESHOLD', '10.0'))
+COST_THRESHOLD = float(os.environ.get('DAILY_COST_THRESHOLD', os.environ.get('DAILCOST_THRESHOLD', '10.0')))
 AUTONOMOUS     = os.environ.get('AUTONOMOUS_MODE', 'false').lower() == 'true'
 
 bedrock  = boto3.client('bedrock-runtime', region_name=REGION)
@@ -790,6 +790,95 @@ def get_daily_cost():
         return {'total': 0, 'services': {}, 'date': '', 'error': str(e)}
 
 
+def get_mtd_cost():
+    """Month-to-date spend from Cost Explorer."""
+    try:
+        now   = datetime.now(UTC)
+        start = now.replace(day=1).strftime('%Y-%m-%d')
+        end   = (now + timedelta(days=1)).strftime('%Y-%m-%d')
+        r = ce.get_cost_and_usage(
+            TimePeriod={'Start': start, 'End': end},
+            Granularity='MONTHLY', Metrics=['UnblendedCost'],
+        )
+        total = 0.0
+        for result in r.get('ResultsByTime', []):
+            total += float(result['Total']['UnblendedCost']['Amount'])
+        emit_metric('MTDCostTotal', total, 'None')
+        return {'total': round(total, 4), 'start': start, 'end': now.strftime('%Y-%m-%d')}
+    except Exception as e:
+        return {'total': 0, 'start': '', 'end': '', 'error': str(e)}
+
+
+def get_weekly_costs():
+    try:
+        end   = datetime.now(UTC).strftime('%Y-%m-%d')
+        start = (datetime.now(UTC) - timedelta(days=7)).strftime('%Y-%m-%d')
+        r = ce.get_cost_and_usage(
+            TimePeriod={'Start': start, 'End': end},
+            Granularity='DAILY', Metrics=['UnblendedCost'],
+        )
+        daily = []
+        for result in r.get('ResultsByTime', []):
+            daily.append({
+                'date':   result['TimePeriod']['Start'],
+                'amount': round(float(result['Total']['UnblendedCost']['Amount']), 4),
+            })
+        return {'daily': daily, 'total': round(sum(d['amount'] for d in daily), 4)}
+    except Exception as e:
+        return {'daily': [], 'total': 0, 'error': str(e)}
+
+
+def store_cost_snapshot(costs: dict, digest: str) -> None:
+    """Upsert today's row so the dashboard always has fresh Cost Explorer data."""
+    date = costs.get('date') or datetime.now(UTC).strftime('%Y-%m-%d')
+    try:
+        rds_data.execute_statement(
+            resourceArn=CLUSTER_ARN, secretArn=SECRET_ARN, database=DB_NAME,
+            sql="""
+                INSERT INTO cost_snapshots (snapshot_date, total_cost, service_costs, digest)
+                VALUES (:date::date, :total, :services::jsonb, :digest)
+                ON CONFLICT (snapshot_date) DO UPDATE SET
+                  total_cost    = EXCLUDED.total_cost,
+                  service_costs = EXCLUDED.service_costs,
+                  digest        = CASE
+                    WHEN EXCLUDED.digest != '' THEN EXCLUDED.digest
+                    ELSE cost_snapshots.digest
+                  END
+            """,
+            parameters=[
+                {'name': 'date',     'value': {'stringValue': date}},
+                {'name': 'total',    'value': {'doubleValue': costs.get('total', 0)}},
+                {'name': 'services', 'value': {'stringValue': json.dumps(costs.get('services', {}))}},
+                {'name': 'digest',   'value': {'stringValue': (digest or '')[:3000]}},
+            ],
+        )
+        print(f"Cost snapshot upserted for {date}: ${costs.get('total', 0):.4f}")
+    except Exception as e:
+        print(f"Cost snapshot error: {e}")
+
+
+def store_cost_alert(costs: dict, digest: str) -> None:
+    if costs.get('total', 0) < COST_THRESHOLD:
+        return
+    try:
+        today = costs.get('date') or datetime.now(UTC).strftime('%Y-%m-%d')
+        rds_data.execute_statement(
+            resourceArn=CLUSTER_ARN, secretArn=SECRET_ARN, database=DB_NAME,
+            sql="""
+                INSERT INTO cost_alerts (alert_date, daily_spend, threshold, message)
+                VALUES (:date::date, :spend, :threshold, :msg)
+            """,
+            parameters=[
+                {'name': 'date',      'value': {'stringValue': today}},
+                {'name': 'spend',     'value': {'doubleValue': costs['total']}},
+                {'name': 'threshold', 'value': {'doubleValue': COST_THRESHOLD}},
+                {'name': 'msg',       'value': {'stringValue': (digest or '')[:500]}},
+            ],
+        )
+    except Exception as e:
+        print(f"Cost alert error: {e}")
+
+
 # ============================================
 # Start/Stop with Approval
 # ============================================
@@ -898,7 +987,7 @@ COST TODAY: ${costs.get('total', 0):.4f} (threshold: ${COST_THRESHOLD})
 
 LLM OBSERVABILITY (24h):
   Queries:          {llm_metrics.get('TotalQueries', 0)}
-  Avg latency:      {m_metrics.get('AvgLatency', 0)}s
+  Avg latency:      {llm_metrics.get('AvgLatency', 0)}s
   Error rate:       {llm_metrics.get('ErrorRate', 0)}%
   Cost per query:   ${llm_metrics.get('CostPerQuery', 0):.4f}
   Est tokens in:    {llm_metrics.get('EstimatedTokensIn', 0):,}
@@ -966,7 +1055,40 @@ Be highly specific with numbers. This is for a developer who built this system."
         healthy = len([c for c in health_checks if c['status'] == 'healthy'])
         return (f"Ops Digest — {datetime.now(UTC).isoformat()}\n"
                 f"Health: {healthy}/{len(health_checks)} | "
-                f"Ct: ${costs.get('total', 0):.2f} | Issues: {len(issues)}")
+                f"Cost: ${costs.get('total', 0):.2f} | Issues: {len(issues)}")
+
+
+def generate_quick_digest(health_checks, costs, llm_metrics, api_costs, issues, mtd):
+    """Factual digest for 30-min runs — no Bedrock call."""
+    healthy = len([c for c in health_checks if c['status'] == 'healthy'])
+    score   = int((healthy / max(len(health_checks), 1)) * 100)
+    top_svc = sorted(costs.get('services', {}).items(), key=lambda x: x[1], reverse=True)[:5]
+    svc_lines = "\n".join(f"- **{s}**: ${a:.4f}" for s, a in top_svc) or "- No service breakdown"
+    health_lines = "\n".join(
+        f"- {c['service']}: **{c['status']}** — {c.get('detail', '')[:80]}"
+        for c in health_checks
+    )
+    status = 'ALERT' if costs.get('total', 0) >= COST_THRESHOLD else 'MONITOR' if costs.get('total', 0) >= COST_THRESHOLD / 2 else 'ON TRACK'
+    issue_block = "\n".join(f"- {i}" for i in issues) if issues else "- None"
+    return f"""## Alex Ops — {datetime.now(UTC).strftime('%Y-%m-%d %H:%M UTC')}
+
+**Status:** {status} | **Health:** {score}/100 ({healthy}/{len(health_checks)} services)
+
+### Costs
+- **Today:** ${costs.get('total', 0):.4f} (threshold ${COST_THRESHOLD}/day)
+- **MTD:** ${mtd.get('total', 0):.4f}
+- **LLM queries (24h):** {llm_metrics.get('TotalQueries', 0)} | error rate {llm_metrics.get('ErrorRate', 0):.1f}%
+- **API cost (24h):** ${api_costs.get('grand_total', 0):.4f}
+
+### Top services today
+{svc_lines}
+
+### Service health
+{health_lines}
+
+### Issues
+{issue_block}
+"""
 
 
 # ============================================
@@ -974,16 +1096,19 @@ Be highly specific with numbers. This is for a developer who built this system."
 # ============================================
 def store_snapshot(health_checks, costs, llm_metrics,
                    api_metrics, rate_limits, traces,
-                   api_costs, digest):
+                   api_costs, digest, mtd=None):
     try:
         full_data = {
             "health":      {c['service']: c['status'] for c in health_checks},
+            "health_detail": health_checks,
             "costs":       costs,
+            "mtd":         mtd or {},
             "llm_metrics": llm_metrics,
             "api_metrics": api_metrics,
             "rate_limits": rate_limits,
             "traces":      traces,
-            "api_costs":   api_costs
+            "api_costs":   api_costs,
+            "updated_at":  datetime.now(UTC).isoformat(),
         }
         rds_data.execute_statement(
             resourceArn=CLUSTER_ARN, secretArn=SECRET_ARN, database=DB_NAME,
@@ -994,12 +1119,28 @@ def store_snapshot(health_checks, costs, llm_metrics,
                 {'name': 'time',   'value': {'stringValue': datetime.now(UTC).strftime('%Y-%m-%d %H:%M:%S')}, 'typeHint': 'TIMESTAMP'},
                 {'name': 'status', 'value': {'stringValue': json.dumps(full_data)}},
                 {'name': 'cost',   'value': {'doubleValue': costs.get('total', 0)}},
-                {'name': 'digest', 'value': {'stringValue': digest[:3000]}}
-            ]
+                {'name': 'digest', 'value': {'stringValue': digest[:3000]}},
+            ],
         )
-        print("Snapshot stored")
+        print("Ops snapshot stored")
     except Exception as e:
-        print(f"Store error: {e}")
+        print(f"Ops snapshot error: {e}")
+        # Fallback for legacy schema (dost column typo)
+        try:
+            rds_data.execute_statement(
+                resourceArn=CLUSTER_ARN, secretArn=SECRET_ARN, database=DB_NAME,
+                sql="""INSERT INTO ops_snapshots (snapshot_time, health_status, dost, digest)
+                       VALUES (:time, :status::jsonb, :cost, :digest)""",
+                parameters=[
+                    {'name': 'time',   'value': {'stringValue': datetime.now(UTC).strftime('%Y-%m-%d %H:%M:%S')}, 'typeHint': 'TIMESTAMP'},
+                    {'name': 'status', 'value': {'stringValue': json.dumps(full_data)}},
+                    {'name': 'cost',   'value': {'doubleValue': costs.get('total', 0)}},
+                    {'name': 'digest', 'value': {'stringValue': digest[:3000]}},
+                ],
+            )
+            print("Ops snapshot stored (legacy dost column)")
+        except Exception as e2:
+            print(f"Store error: {e2}")
 
 
 def send_email(subject, body):
@@ -1050,7 +1191,9 @@ def lambda_handler(event, context):
     health_checks = run_health_checks()
 
     print("--- Costs ---")
-    costs = get_daily_cost()
+    costs  = get_daily_cost()
+    mtd    = get_mtd_cost()
+    weekly = get_weekly_costs()
 
     print("--- LLM metrics ---")
     llm_metrics = get_llm_metrics(hours=24)
@@ -1099,15 +1242,33 @@ def lambda_handler(event, context):
             issues.append(f"ECS down — token: {token}")
             emit_metric('ApprovalRequested', 1, dimensions={'Action': 'start_ecs'})
 
-    # Generate digest
+    # Generate digest — full AI digest on issues/weekly; quick factual digest every 30 min
     print("--- Digest ---")
-    digest = generate_digest(
-        health_checks, costs, llm_metrics, api_metrics,
-        rate_limits, traces, api_costs, issues
-    )
+    is_weekly  = now.weekday() == 0 and now.hour == 8
+    has_issues = len(issues) > 0
+    if has_issues or is_weekly or source.endswith('weekly'):
+        digest = generate_digest(
+            health_checks, costs, llm_metrics, api_metrics,
+            rate_limits, traces, api_costs, issues
+        )
+    else:
+        digest = generate_quick_digest(
+            health_checks, costs, llm_metrics, api_costs, issues, mtd
+        )
 
     store_snapshot(health_checks, costs, llm_metrics, api_metrics,
-                   rate_limits, traces, api_costs, digest)
+                   rate_limits, traces, api_costs, digest, mtd)
+
+    # Keep dashboard cost_snapshots fresh every 30 min
+    store_cost_snapshot(costs, digest)
+    for day in weekly.get('daily', []):
+        if day['date'] != costs.get('date'):
+            store_cost_snapshot(
+                {'date': day['date'], 'total': day['amount'], 'services': {}},
+                '',
+            )
+    if costs['total'] >= COST_THRESHOLD:
+        store_cost_alert(costs, digest)
 
     # Email decisions
     is_weekly  = now.weekday() == 0 and now.hour == 8
@@ -1136,6 +1297,8 @@ def lambda_handler(event, context):
         "total_services":   len(health_checks),
         "issues":           issues,
         "daily_cost":       costs['total'],
+        "mtd_cost":         mtd.get('total', 0),
+        "weekly_cost":      weekly.get('total', 0),
         "llm_queries":      llm_metrics.get('TotalQueries', 0),
         "llm_error_rate":   llm_metrics.get('ErrorRate', 0),
         "total_tool_calls": traces.get('total_tool_calls', 0),

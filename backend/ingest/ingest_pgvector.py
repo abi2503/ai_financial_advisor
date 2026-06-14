@@ -51,6 +51,23 @@ def execute_with_retry(sql, parameters=None, retries=3):
     raise Exception("Aurora failed to resume after maximum retries")
 
 
+def _resolve_db_user_id(clerk_id: str) -> str | None:
+    """Map Clerk ID → Aurora users.id UUID for scoped vectors."""
+    if not clerk_id:
+        return None
+    try:
+        resp = execute_with_retry(
+            "SELECT id::text FROM users WHERE clerk_id = :clerk_id LIMIT 1",
+            [{"name": "clerk_id", "value": {"stringValue": clerk_id}}],
+        )
+        rows = resp.get("records", [])
+        if rows:
+            return rows[0][0].get("stringValue")
+    except Exception as e:
+        logger.warning(f"Could not resolve user_id for {clerk_id}: {e}")
+    return None
+
+
 def get_embeddings(text: str) -> list:
     """Generate embeddings via SageMaker all-MiniLM-L6-v2"""
     if len(text) > 300:
@@ -77,25 +94,43 @@ def handle_ingest_pgvector(body: dict) -> dict:
     if not content:
         return {"statusCode": 400, "body": json.dumps({"error": "content required"})}
 
-    logger.info(f"Ingesting to pgvector: {topic}")
+    session_id   = (body.get("session_id") or "")[:36]
+    clerk_id     = body.get("user_id") or body.get("clerk_id") or ""
+    db_user_id   = _resolve_db_user_id(clerk_id) if clerk_id else None
+    chunk_index  = int(body.get("chunk_index", 0))
+    query_text   = (body.get("query") or "")[:500]
+    chunk_type   = (body.get("chunk_type") or "document")[:30]
+
+    logger.info(f"Ingesting to pgvector: {topic} user={db_user_id or 'global'}")
     vector     = get_embeddings(content)
     vector_id  = str(uuid.uuid4())
     vector_str = "[" + ",".join(str(v) for v in vector) + "]"
 
+    params = [
+        {"name": "id",          "value": {"stringValue": vector_id}},
+        {"name": "topic",       "value": {"stringValue": topic[:200]}},
+        {"name": "content",     "value": {"stringValue": content[:5000]}},
+        {"name": "embedding",   "value": {"stringValue": vector_str}},
+        {"name": "source",      "value": {"stringValue": body.get("source", "alex-researcher")[:100]}},
+        {"name": "session_id",  "value": {"stringValue": session_id}},
+        {"name": "chunk_index", "value": {"longValue":   chunk_index}},
+        {"name": "query",       "value": {"stringValue": query_text}},
+        {"name": "chunk_type",  "value": {"stringValue": chunk_type}},
+    ]
+    if db_user_id:
+        params.append({"name": "user_id", "value": {"stringValue": db_user_id}})
+
+    user_col = ", user_id" if db_user_id else ""
+    user_val = ", :user_id::uuid" if db_user_id else ""
+
     execute_with_retry(
-        """
+        f"""
         INSERT INTO research_vectors
-          (id, topic, content, embedding, source)
+          (id, topic, content, embedding, source, session_id, chunk_index, query, chunk_type{user_col})
         VALUES
-          (:id::uuid, :topic, :content, :embedding::vector, :source)
+          (:id::uuid, :topic, :content, :embedding::vector, :source, :session_id, :chunk_index, :query, :chunk_type{user_val})
         """,
-        [
-            {"name": "id",        "value": {"stringValue": vector_id}},
-            {"name": "topic",     "value": {"stringValue": topic[:200]}},
-            {"name": "content",   "value": {"stringValue": content[:5000]}},
-            {"name": "embedding", "value": {"stringValue": vector_str}},
-            {"name": "source",    "value": {"stringValue": "alex-researcher"}},
-        ]
+        params
     )
 
     logger.info(f"Stored vector {vector_id} in pgvector")

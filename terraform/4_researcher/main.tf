@@ -145,8 +145,6 @@ resource "aws_iam_role_policy" "ecs_task_bedrock_policy" {
       },
       {
         # CloudWatch — emit custom metrics
-        # Why: ECS container needs permission to
-        #      call PutMetricData API
         Effect = "Allow"
         Action = [
           "cloudwatch:PutMetricData",
@@ -154,6 +152,26 @@ resource "aws_iam_role_policy" "ecs_task_bedrock_policy" {
           "cloudwatch:ListMetrics"
         ]
         Resource = "*"
+      },
+      {
+        # Aurora Data API — context + observability logging
+        Effect = "Allow"
+        Action = [
+          "rds-data:ExecuteStatement",
+          "rds-data:BatchExecuteStatement"
+        ]
+        Resource = "arn:aws:rds:${var.aws_region}:${data.aws_caller_identity.current.account_id}:cluster:alex-aurora"
+      },
+      {
+        Effect = "Allow"
+        Action = ["secretsmanager:GetSecretValue"]
+        Resource = "arn:aws:secretsmanager:${var.aws_region}:${data.aws_caller_identity.current.account_id}:secret:alex/aurora/credentials-*"
+      },
+      {
+        # SageMaker embeddings for RAG context (deep mode)
+        Effect = "Allow"
+        Action = ["sagemaker:InvokeEndpoint"]
+        Resource = "arn:aws:sagemaker:${var.aws_region}:${data.aws_caller_identity.current.account_id}:endpoint/alex-embedding"
       }
     ]
   })
@@ -213,7 +231,12 @@ resource "aws_ecs_task_definition" "researcher" {
         { name = "ALEX_API_ENDPOINT", value = var.alex_api_endpoint },
         { name = "ALEX_API_KEY",      value = var.alex_api_key },
         { name = "BEDROCK_GUARDRAIL_ID",      value = "eea439luokx8" },
-        { name = "BEDROCK_GUARDRAIL_VERSION", value = "1" }
+        { name = "BEDROCK_GUARDRAIL_VERSION", value = "1" },
+        { name = "DB_CLUSTER_ARN",     value = "arn:aws:rds:${var.aws_region}:${data.aws_caller_identity.current.account_id}:cluster:alex-aurora" },
+        { name = "DB_SECRET_ARN",      value = "arn:aws:secretsmanager:${var.aws_region}:${data.aws_caller_identity.current.account_id}:secret:alex/aurora/credentials-2HP8fm" },
+        { name = "DB_NAME",            value = "alex_db" },
+        { name = "SAGEMAKER_ENDPOINT", value = "alex-embedding" },
+        { name = "AWS_REGION",         value = var.aws_region },
       ]
 
       logConfiguration = {

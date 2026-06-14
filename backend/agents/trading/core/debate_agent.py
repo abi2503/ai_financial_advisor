@@ -51,12 +51,23 @@ def lambda_handler(event, context):
             user_id = body.get("user_id", "")
             mode    = body.get("mode", "neutral")
             config  = body.get("config", {})
+            portfolio_summary = body.get("portfolio_summary") or config.get("portfolio_summary", {})
+            if portfolio_summary:
+                config = {**config, "portfolio_summary": portfolio_summary}
+            shares        = body.get("shares", 0)
+            avg_cost      = body.get("avg_cost", 0)
+            current_price = body.get("current_price", 0) or avg_cost
+            cost_basis    = body.get("cost_basis", shares * avg_cost)
+            market_value  = body.get("total_value", shares * current_price)
             holding = {
                 "ticker":         ticker,
-                "shares":         body.get("shares", 0),
-                "purchase_price": body.get("avg_cost", 0),
-                "current_price":  body.get("current_price", 0),
-                "total_value":    body.get("shares", 0) * body.get("avg_cost", 0),
+                "shares":         shares,
+                "purchase_price": avg_cost,
+                "current_price":  current_price,
+                "cost_basis":     cost_basis,
+                "total_value":    market_value,
+                "pnl":            body.get("pnl", market_value - cost_basis),
+                "pnl_pct":        body.get("pnl_pct", ((market_value - cost_basis) / cost_basis * 100) if cost_basis > 0 else 0),
             }
             if not ticker or ticker.isdigit() or len(ticker) > 5:
                 print(f"Skip invalid: {ticker}")

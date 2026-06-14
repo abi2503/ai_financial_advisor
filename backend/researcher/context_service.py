@@ -29,7 +29,7 @@ def execute_sql(sql: str, params: list = []) -> dict:
             database    = DB_NAME,
             sql         = sql,
             parameters  = params
-      )
+        )
     except Exception as e:
         logger.error(f"SQL error: {e}")
         return {"records": []}
@@ -54,14 +54,40 @@ def embed_text(text: str) -> list:
         return []
 
 
+def _parse_field_number(field: dict, default: float = 0.0) -> float:
+    """Aurora Data API may return NUMERIC as stringValue — same pattern as portfolio API."""
+    if not field:
+        return default
+    if 'doubleValue' in field:
+        return float(field['doubleValue'])
+    if 'longValue' in field:
+        return float(field['longValue'])
+    if 'stringValue' in field:
+        try:
+            return float(field['stringValue'])
+        except (TypeError, ValueError):
+            return default
+    return default
+
+
 # ============================================
 # Use Case 1 — Conversation Follow-ups
 # ============================================
 def get_conversation_context(user_id: str, session_id: str, limit: int = 5) -> str:
+    if not user_id or not session_id:
+        return ""
     try:
         result = execute_sql(
-            "LECT messages FROM chat_sessions WHERE session_id = :sid ORDER BY updated_at DESC LIMIT 1",
-            [{'name': 'sid', 'value': {'stringValue': session_id}}]
+            """
+            SELECT cs.messages FROM chat_sessions cs
+            JOIN users u ON u.id = cs.user_id
+            WHERE cs.session_id = :sid AND u.clerk_id = :user_id
+            ORDER BY cs.updated_at DESC LIMIT 1
+            """,
+            [
+                {'name': 'sid',      'value': {'stringValue': session_id}},
+                {'name': 'user_id',  'value': {'stringValue': user_id}},
+            ]
         )
         if not result['records']:
             return ""
@@ -87,7 +113,7 @@ def get_conversation_context(user_id: str, session_id: str, limit: int = 5) -> s
 # ============================================
 # Use Case 2 — Cross-Session Memory
 # ============================================
-def get_prior_research(query: str, userd: str, days: int = 30, top_k: int = 3) -> str:
+def get_prior_research(query: str, user_id: str, days: int = 30, top_k: int = 3) -> str:
     try:
         embedding = embed_text(query)
         if not embedding:
@@ -96,18 +122,22 @@ def get_prior_research(query: str, userd: str, days: int = 30, top_k: int = 3) -
         embedding_str = "[" + ",".join(map(str, embedding)) + "]"
         cutoff        = (datetime.now(UTC) - timedelta(days=days)).isoformat()
 
+        # user_id is Clerk ID — include global vectors (user_id NULL) + this user's vectors
         result = execute_sql(
             f"""
-            SELECT content, topic, created_at,
-                   1 - (embedding <=> '{embedding_str}'::vector) as similarity
-            FROM research_vectors
-            WHERE created_at > :cutoff
-            ORDER BY embedding <=> '{embedding_str}'::vector
+            SELECT rv.content, rv.topic, rv.created_at,
+                   1 - (rv.embedding <=> '{embedding_str}'::vector) as similarity
+            FROM research_vectors rv
+            LEFT JOIN users u ON u.id = rv.user_id
+            WHERE rv.created_at > :cutoff
+              AND (rv.user_id IS NULL OR u.clerk_id = :user_id)
+            ORDER BY rv.embedding <=> '{embedding_str}'::vector
             LIMIT :top_k
             """,
             [
-                {'name': 'cutoff', 'value': {'stringValue': cutoff}},
-                {'name': 'top_k',  'value': {'longValue':   top_k}}
+                {'name': 'cutoff',   'value': {'stringValue': cutoff}},
+                {'name': 'user_id',  'value': {'stringValue': user_id}},
+                {'name': 'top_k',    'value': {'longValue':   top_k}}
             ]
         )
 
@@ -119,7 +149,7 @@ def get_prior_research(query: str, userd: str, days: int = 30, top_k: int = 3) -
             content    = row[0].get('stringValue', '')
             topic      = row[1].get('stringValue', '')
             created_at = row[2].get('stringValue', '')
-            similarity = row[3].get('doubleValue',  0)
+            similarity = _parse_field_number(row[3], 0)
 
             if similarity > 0.65:
                 try:
@@ -128,7 +158,7 @@ def get_prior_research(query: str, userd: str, days: int = 30, top_k: int = 3) -
                     date_str = "today" if days_ago == 0 else \
                                "yesterday" if days_ago == 1 else \
                                f"{days_ago} days ago"
-                except:
+                except Exception:
                     date_str = "recently"
 
                 relevant.append(f"[{date_str} - {topic}]\n{content[:400]}")
@@ -152,10 +182,11 @@ def get_portfolio_context(user_id: str) -> str:
     try:
         holdings = execute_sql(
             """
-            SELECT ps.ticker, ps.shares, ps.purchase_price
-            FROM portfolio_stocks ps
-            JOIN users u ON u.id = ps.user_id
+            SELECT p.ticker, p.shares, p.purchase_price
+            FROM portfolios p
+            JOIN users u ON u.id = p.user_id
             WHERE u.clerk_id = :user_id
+            ORDER BY p.ticker
             """,
             [{'name': 'user_id', 'value': {'stringValue': user_id}}]
         )
@@ -173,7 +204,7 @@ def get_portfolio_context(user_id: str) -> str:
                 "SELECT content, created_at FROM research_vectors WHERE topic ILIKE :ticker ORDER BY created_at DESC LIMIT 1",
                 [{'name': 'ticker', 'value': {'stringValue': f'%{ticker}%'}}]
             )
-            if result[ecords']:
+            if result['records']:
                 content = result['records'][0][0].get('stringValue', '')
                 portfolio_context.append(f"{ticker}: {content[:300]}")
 
@@ -201,13 +232,18 @@ def detect_contradictions(query: str, new_content: str, user_id: str) -> str:
 
         result = execute_sql(
             f"""
-          SELECT content, topic
-            FROM research_vectors
-            WHERE created_at > :cutoff
-            ORDER BY embedding <=> '{embedding_str}'::vector
+            SELECT rv.content, rv.topic
+            FROM research_vectors rv
+            LEFT JOIN users u ON u.id = rv.user_id
+            WHERE rv.created_at > :cutoff
+              AND (rv.user_id IS NULL OR u.clerk_id = :user_id)
+            ORDER BY rv.embedding <=> '{embedding_str}'::vector
             LIMIT 1
             """,
-            [{'name': 'cutoff', 'value': {'stringValue': cutoff}}]
+            [
+                {'name': 'cutoff',  'value': {'stringValue': cutoff}},
+                {'name': 'user_id', 'value': {'stringValue': user_id}}
+            ]
         )
 
         if not result['records']:
@@ -248,14 +284,23 @@ def detect_contradictions(query: str, new_content: str, user_id: str) -> str:
 def detect_sector_patterns(user_id: str) -> str:
     try:
         result = execute_sql(
-            "SELECT content FROM research_vectors WHERE created_at > NOW() - INTERVAL '30 days' ORDER BY created_at DESC LIMIT 20"
+            """
+            SELECT rv.content
+            FROM research_vectors rv
+            LEFT JOIN users u ON u.id = rv.user_id
+            WHERE rv.created_at > NOW() - INTERVAL '30 days'
+              AND (rv.user_id IS NULL OR u.clerk_id = :user_id)
+            ORDER BY rv.created_at DESC
+            LIMIT 20
+            """,
+            [{'name': 'user_id', 'value': {'stringValue': user_id}}]
         )
 
         if not result['records'] or len(result['records']) < 5:
             return ""
 
         all_content = " ".join([
-            row[0].get('stringValue', '') for row in resul'records']
+            row[0].get('stringValue', '') for row in result['records']
         ]).lower()
 
         patterns = {
@@ -292,10 +337,11 @@ def get_proactive_suggestions(user_id: str) -> dict:
     try:
         holdings = execute_sql(
             """
-            SELECT ps.ticker
-            FROM portfolio_stocks ps
-            JOIN users u ON u.id = ps.user_id
+            SELECT p.ticker
+            FROM portfolios p
+            JOIN users u ON u.id = p.user_id
             WHERE u.clerk_id = :user_id
+            ORDER BY p.ticker
             """,
             [{'name': 'user_id', 'value': {'stringValue': user_id}}]
         )
@@ -306,7 +352,7 @@ def get_proactive_suggestions(user_id: str) -> dict:
         for ticker in tickers[:5]:
             result = execute_sql(
                 "SELECT created_at FROM research_vectors WHERE topic ILIKE :ticker ORDER BY created_at DESC LIMIT 1",
-                [{'name': 'ticker', 'value': {'stringValue':'%{ticker}%'}}]
+                [{'name': 'ticker', 'value': {'stringValue': f'%{ticker}%'}}]
             )
 
             if result['records']:
@@ -321,7 +367,7 @@ def get_proactive_suggestions(user_id: str) -> dict:
                             "action":   f"Update {ticker} analysis",
                             "priority": "high" if days_ago >= 7 else "medium"
                         })
-                except:
+                except Exception:
                     pass
             else:
                 suggestions.append({
@@ -329,7 +375,7 @@ def get_proactive_suggestions(user_id: str) -> dict:
                     "message":  f"{ticker} — no research yet",
                     "action":   f"Research {ticker}",
                     "priority": "high"
-            })
+                })
 
         return {"suggestions": suggestions[:3], "has_suggestions": len(suggestions) > 0}
 
@@ -345,30 +391,53 @@ def build_full_context(
     query:       str,
     user_id:     str,
     session_id:  str,
-    new_content: str = ""
+    new_content: str = "",
+    fast:        bool = False,
 ) -> str:
+    """Assemble context blocks. fast=True skips RAG embed + sector scans (~2-4s saved)."""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    if fast:
+        tasks = {
+            'conv':      lambda: get_conversation_context(user_id, session_id),
+            'portfolio': lambda: get_portfolio_context(user_id),
+        }
+        try:
+            from query_trace import record_api
+            record_api("Aurora RDS", "chat_sessions + portfolios", success=True)
+        except ImportError:
+            pass
+    else:
+        tasks = {
+            'conv':       lambda: get_conversation_context(user_id, session_id),
+            'prior':      lambda: get_prior_research(query, user_id),
+            'portfolio':  lambda: get_portfolio_context(user_id),
+            'patterns':   lambda: detect_sector_patterns(user_id),
+        }
+        try:
+            from query_trace import record_api
+            record_api("Aurora RDS", "research_vectors + chat_sessions", success=True)
+            record_api("SageMaker", "alex-embedding", success=True)
+        except ImportError:
+            pass
+        if new_content:
+            tasks['contradictions'] = lambda: detect_contradictions(query, new_content, user_id)
+
     parts = []
-
-    conv = get_conversation_context(user_id, session_id)
-    if conv:
-        parts.append(conv)
-
-    prior = get_prior_research(query, user_id)
-    if prior:
-        parts.append(prior)
-
-    portfolio = get_portfolio_context(user_id)
-    if portfolio:
-        parts.append(portfolio)
-
-    if new_content:
-        contradictions = detect_contradictions(query, new_content, user_id)
-        if contradictions:
-            parts.append(contradictions)
-
-    patterns = detect_sector_patterns(user_id)
-    if patterns:
-        parts.append(patterns)
+    with ThreadPoolExecutor(max_workers=len(tasks)) as pool:
+        futures = {pool.submit(fn): key for key, fn in tasks.items()}
+        for future in as_completed(futures):
+            try:
+                result = future.result()
+                if result:
+                    parts.append(result)
+            except Exception as e:
+                logger.error(f"Context task {futures[future]} failed: {e}")
+                try:
+                    from query_trace import record_api
+                    record_api("Aurora RDS", futures[future], success=False, error=str(e)[:120])
+                except ImportError:
+                    pass
 
     return "\n\n".join(parts) if parts else ""
 
@@ -377,26 +446,39 @@ def build_full_context(
 # Session Management
 # ============================================
 def save_message(user_id: str, session_id: str, role: str, content: str):
+    if not user_id or not session_id:
+        return
     try:
         result = execute_sql(
-            "SELECT id, messages FROM chat_sessions WHERE session_id = :sid LIMIT 1",
-            [{'name': 'sid', 'value': {'stringValue': session_id}}]
+            """
+            SELECT cs.id, cs.messages FROM chat_sessions cs
+            JOIN users u ON u.id = cs.user_id
+            WHERE cs.session_id = :sid AND u.clerk_id = :user_id
+            LIMIT 1
+            """,
+            [
+                {'name': 'sid',     'value': {'stringValue': session_id}},
+                {'name': 'user_id', 'value': {'stringValue': user_id}},
+            ]
         )
 
         new_msg = {"role": role, "content": content[:2000], "time": datetime.now(UTC).isoformat()}
 
         if result['records']:
-            session_id_db = result['records'][0][0].get('stringValue', '')
             messages_json = result['records'][0][1].get('stringValue', '[]')
             messages      = json.loads(messages_json)
             messages.append(new_msg)
-            # Keep last 20 messages
             messages = messages[-20:]
             execute_sql(
-                "UPDATE chat_sessions SET messages = :msgs::jsonb, updated_at = NOW() WHERE session_id = :sid",
+                """
+                UPDATE chat_sessions cs SET messages = :msgs::jsonb, updated_at = NOW()
+                FROM users u
+                WHERE cs.user_id = u.id AND cs.session_id = :sid AND u.clerk_id = :user_id
+                """,
                 [
-                    {'name': 'msgs', 'value': {'stringValue': json.dumps(messages)}},
-                    {'name': 'sid',  'value': {'stringValue': session_id}}
+                    {'name': 'msgs',    'value': {'stringValue': json.dumps(messages)}},
+                    {'name': 'sid',     'value': {'stringValue': session_id}},
+                    {'name': 'user_id', 'value': {'stringValue': user_id}},
                 ]
             )
         else:
@@ -415,3 +497,79 @@ def save_message(user_id: str, session_id: str, role: str, content: str):
             )
     except Exception as e:
         logger.error(f"Save message error: {e}")
+
+
+def load_session_messages(user_id: str, session_id: str, limit: int = 30) -> list:
+    """Load chat history for session hydration."""
+    if not user_id or not session_id:
+        return []
+    try:
+        result = execute_sql(
+            """
+            SELECT cs.messages FROM chat_sessions cs
+            JOIN users u ON u.id = cs.user_id
+            WHERE cs.session_id = :sid AND u.clerk_id = :user_id
+            LIMIT 1
+            """,
+            [
+                {'name': 'sid',     'value': {'stringValue': session_id}},
+                {'name': 'user_id', 'value': {'stringValue': user_id}},
+            ],
+        )
+        if not result['records']:
+            return []
+        raw = result['records'][0][0].get('stringValue', '[]')
+        messages = json.loads(raw)
+        return messages[-limit:] if len(messages) > limit else messages
+    except Exception as e:
+        logger.error(f"Load session error: {e}")
+        return []
+
+
+def sync_session_messages(user_id: str, session_id: str, messages: list) -> None:
+    """Replace session messages (frontend sync)."""
+    if not user_id or not session_id:
+        return
+    try:
+        trimmed = messages[-30:]
+        result = execute_sql(
+            """
+            SELECT cs.id FROM chat_sessions cs
+            JOIN users u ON u.id = cs.user_id
+            WHERE cs.session_id = :sid AND u.clerk_id = :user_id
+            LIMIT 1
+            """,
+            [
+                {'name': 'sid',     'value': {'stringValue': session_id}},
+                {'name': 'user_id', 'value': {'stringValue': user_id}},
+            ],
+        )
+        payload = json.dumps(trimmed)
+        if result['records']:
+            execute_sql(
+                """
+                UPDATE chat_sessions cs SET messages = :msgs::jsonb, updated_at = NOW()
+                FROM users u
+                WHERE cs.user_id = u.id AND cs.session_id = :sid AND u.clerk_id = :user_id
+                """,
+                [
+                    {'name': 'msgs',    'value': {'stringValue': payload}},
+                    {'name': 'sid',     'value': {'stringValue': session_id}},
+                    {'name': 'user_id', 'value': {'stringValue': user_id}},
+                ],
+            )
+        else:
+            execute_sql(
+                """
+                INSERT INTO chat_sessions (user_id, session_id, messages)
+                SELECT id, :sid, :msgs::jsonb
+                FROM users WHERE clerk_id = :user_id
+                """,
+                [
+                    {'name': 'sid',     'value': {'stringValue': session_id}},
+                    {'name': 'msgs',    'value': {'stringValue': payload}},
+                    {'name': 'user_id', 'value': {'stringValue': user_id}},
+                ],
+            )
+    except Exception as e:
+        logger.error(f"Sync session error: {e}")

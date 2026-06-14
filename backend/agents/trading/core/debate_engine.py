@@ -37,7 +37,7 @@ def get_ssm(key, default=""):
         return default
 
 
-def build_data_context(market_data, holding: dict) -> str:
+def build_data_context(market_data, holding: dict, portfolio_summary: dict = None) -> str:
     """Build rich context string from MarketData for agent prompts"""
     fund = market_data.fundamentals
     tech = market_data.technicals
@@ -83,12 +83,45 @@ def build_data_context(market_data, holding: dict) -> str:
             lines.append(f"  - {n.title} ({n.source})")
 
     pnl = (market_data.price - holding.get("purchase_price", 0)) * holding.get("shares", 0)
+    shares     = holding.get("shares", 0)
+    avg_cost   = holding.get("purchase_price", 0)
+    cost_basis = holding.get("cost_basis", shares * avg_cost)
+    market_val = shares * market_data.price
+    pnl        = market_val - cost_basis
+    pnl_pct    = (pnl / cost_basis * 100) if cost_basis > 0 else 0
     lines += [
         "", "YOUR POSITION:",
-        f"  Shares:   {holding.get('shares', 0)}",
-        f"  Avg Cost: ${holding.get('purchase_price', 0):.2f}",
-        f"  Value:    ${holding.get('total_value', 0):.2f}",
-        f"  P&L:      ${pnl:.2f}",
+        f"  Shares:        {shares}",
+        f"  Avg Cost:      ${avg_cost:.2f}",
+        f"  Current Price: ${market_data.price:.2f}",
+        f"  Total Holding: ${market_val:.2f}  (shares × current price)",
+        f"  Cost Basis:    ${cost_basis:.2f}  (shares × avg cost)",
+        f"  P&L:           ${pnl:+.2f} ({pnl_pct:+.1f}%)",
+    ]
+
+    if portfolio_summary:
+        ps = portfolio_summary
+        lines += [
+            "", "OVERALL PORTFOLIO:",
+            f"  Total Holdings:  ${ps.get('total_market_value', 0):,.2f}",
+            f"  Total Cost:      ${ps.get('total_cost_basis', 0):,.2f}",
+            f"  Total P&L:       ${ps.get('total_pnl', 0):+,.2f} ({ps.get('total_pnl_pct', 0):+.1f}%)",
+            f"  Positions:       {ps.get('position_count', 0)}",
+        ]
+        holdings = ps.get('holdings', [])
+        if holdings:
+            lines.append("")
+            lines.append("ALL HOLDINGS:")
+            for h in holdings:
+                wt = h.get('weight_pct', 0)
+                lines.append(
+                    f"  {h.get('ticker','')}: {h.get('shares',0)} sh | "
+                    f"hold=${h.get('market_value',0):,.0f} cost=${h.get('cost_basis',0):,.0f} | "
+                    f"P&L ${h.get('pnl',0):+,.0f} ({h.get('pnl_pct',0):+.1f}%) | "
+                    f"{wt:.0f}% of portfolio"
+                )
+
+    lines += [
         "",
         f"Data Sources: {', '.join(market_data.sources_used)}",
         f"Data Quality: {market_data.data_quality:.0%}",
@@ -262,7 +295,7 @@ def run_debate(ticker: str, holding: dict, sim_id: str,
     market_data = get_market_data(ticker)
     print(f"  Price: ${market_data.price:.2f} | Quality: {market_data.data_quality:.0%}")
 
-    data_ctx = build_data_context(market_data, holding)
+    data_ctx = build_data_context(market_data, holding, config.get("portfolio_summary"))
 
     # Instantiate agents with configurable models
     agent_list = [

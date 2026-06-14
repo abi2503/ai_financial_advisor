@@ -6,6 +6,8 @@ echo "📦 Packaging Lambda agents..."
 AGENTS_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$AGENTS_DIR"
 
+SHARED_FILES="db_helper.py portfolio_research.py"
+
 for agent in planner tagger reporter scheduler; do
     echo "Packaging $agent..."
 
@@ -14,6 +16,9 @@ for agent in planner tagger reporter scheduler; do
     mkdir -p $TEMP_DIR
 
     cp ${agent}.py $TEMP_DIR/
+    for f in $SHARED_FILES; do
+        cp "$f" $TEMP_DIR/ 2>/dev/null || true
+    done
 
     pip install boto3 httpx \
         --target $TEMP_DIR/ \

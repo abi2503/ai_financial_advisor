@@ -22,7 +22,7 @@ resource "aws_sqs_queue" "dlq" {
 
 resource "aws_sqs_queue" "research_queue" {
   name                       = "${var.project_name}-research-queue"
-  visibility_timeout_seconds = 300
+  visibility_timeout_seconds = 900
   message_retention_seconds  = 3600
   receive_wait_time_seconds  = 20
 
@@ -36,7 +36,7 @@ resource "aws_sqs_queue" "research_queue" {
 
 resource "aws_sqs_queue" "results_queue" {
   name                       = "${var.project_name}-results-queue"
-  visibility_timeout_seconds = 120
+  visibility_timeout_seconds = 900
   message_retention_seconds  = 3600
   receive_wait_time_seconds  = 20
 
@@ -166,12 +166,16 @@ resource "aws_lambda_function" "scheduler" {
   role          = aws_iam_role.agent_role.arn
   handler       = "scheduler.lambda_handler"
   runtime       = "python3.12"
-  timeout       = 60
+  timeout       = 120
   memory_size   = 256
 
   environment {
     variables = {
       RESEARCH_QUEUE_URL = aws_sqs_queue.research_queue.url
+      PLANNER_FUNCTION   = aws_lambda_function.planner.function_name
+      DB_CLUSTER_ARN     = var.db_cluster_arn
+      DB_SECRET_ARN      = var.db_secret_arn
+      DB_NAME            = var.db_name
       AWS_REGION_NAME    = var.aws_region
     }
   }
@@ -204,13 +208,14 @@ resource "aws_lambda_function" "reporter" {
   role          = aws_iam_role.agent_role.arn
   handler       = "reporter.lambda_handler"
   runtime       = "python3.12"
-  timeout       = 120
+  timeout       = 900
   memory_size   = 512
 
   environment {
     variables = {
       ALEX_API_ENDPOINT          = var.alex_api_endpoint
       ALEX_API_KEY               = var.alex_api_key
+      ECS_URL                    = var.alb_url
       DB_CLUSTER_ARN             = var.db_cluster_arn
       DB_SECRET_ARN              = var.db_secret_arn
       DB_NAME                    = var.db_name
@@ -297,7 +302,7 @@ resource "aws_iam_role_policy" "eventbridge_policy" {
 
 resource "aws_scheduler_schedule" "auto_research" {
   name  = "${var.project_name}-auto-research"
-  state = "DISABLED"
+  state = "ENABLED"
 
   flexible_time_window {
     mode = "OFF"

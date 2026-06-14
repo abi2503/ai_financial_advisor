@@ -153,7 +153,14 @@ def send_email(subject, body):
 def store_snapshot(date, costs, digest):
     try:
         execute_sql(
-            "INSERT INTO cost_snapshots (snapshot_date, total_cost, service_costs, digest) VALUES (:date, :total, :services::jsonb, :digest) ON CONFLICT DO NOTHING",
+            """
+            INSERT INTO cost_snapshots (snapshot_date, total_cost, service_costs, digest)
+            VALUES (:date::date, :total, :services::jsonb, :digest)
+            ON CONFLICT (snapshot_date) DO UPDATE SET
+              total_cost    = EXCLUDED.total_cost,
+              service_costs = EXCLUDED.service_costs,
+              digest        = EXCLUDED.digest
+            """,
             [
                 {'name': 'date',     'value': {'stringValue': date}},
                 {'name': 'total',    'value': {'doubleValue': costs['total']}},
@@ -164,6 +171,26 @@ def store_snapshot(date, costs, digest):
         print(f"Stored snapshot for {date}")
     except Exception as e:
         logger.error(f"Store snapshot error: {e}")
+
+
+def store_weekly_snapshots(weekly, today_costs, digest):
+    """Persist each of the last 7 days so the dashboard week total is accurate."""
+    stored_dates = set()
+    for day in weekly.get('daily', []):
+        is_today = day['date'] == today_costs['date']
+        store_snapshot(
+            day['date'],
+            {
+                'total':    today_costs['total'] if is_today else day['amount'],
+                'services': today_costs['services'] if is_today else {},
+            },
+            digest if is_today else '',
+        )
+        stored_dates.add(day['date'])
+
+    # Cost Explorer weekly range may exclude today — always store today's reading
+    if today_costs['date'] not in stored_dates:
+        store_snapshot(today_costs['date'], today_costs, digest)
 
 
 def lambda_handler(event, context):
@@ -180,14 +207,17 @@ def lambda_handler(event, context):
     digest = generate_digest(costs, weekly)
     print(f"Digest: {len(digest)} chars")
 
-    store_snapshot(today, costs, digest)
+    store_weekly_snapshots(weekly, costs, digest)
 
     if costs['total'] >= ALERT_THRESHOLD:
         print(f"ALERT triggered: ${costs['total']} >= ${ALERT_THRESHOLD}")
         subject = f"Alex AI Cost Alert — ${costs['total']:.2f} today (threshold: ${ALERT_THRESHOLD})"
         send_email(subject, digest)
         execute_sql(
-            "INSERT INTO cost_alerts (alert_date, daily_spend, threshold, message) VALUES (:date, :spend, :threshold, :msg)",
+            """
+            INSERT INTO cost_alerts (alert_date, daily_spend, threshold, message)
+            VALUES (:date::date, :spend, :threshold, :msg)
+            """,
             [
                 {'name': 'date',      'value': {'stringValue': today}},
                 {'name': 'spend',     'value': {'doubleValue': costs['total']}},
@@ -202,9 +232,10 @@ def lambda_handler(event, context):
     return {
         "statusCode": 200,
         "body": json.dumps({
-            "date":   today,
-            "total":  costs['total'],
-            "status": "alert" if costs['total'] >= ALERT_THRESHOLD else "ok",
-            "digest": digest[:200]
+            "date":         today,
+            "total":        costs['total'],
+            "weekly_total": weekly['total'],
+            "status":       "alert" if costs['total'] >= ALERT_THRESHOLD else "ok",
+            "digest":       digest[:200]
         })
     }

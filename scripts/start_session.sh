@@ -181,6 +181,20 @@ FRONTEND=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 \
 echo "  Frontend: HTTP $FRONTEND"
 
 echo ""
+echo "⏰ Step 6: Enable portfolio research scheduler..."
+bash scripts/toggle_eventbridge.sh enable 2>/dev/null || true
+if [ ! -z "$ALB_URL" ] && [ "$ALB_URL" != "None" ]; then
+  aws lambda update-function-configuration \
+    --function-name alex-reporter --region $REGION \
+    --environment "Variables={ALEX_API_ENDPOINT=${ALEX_API_ENDPOINT:-},ALEX_API_KEY=${ALEX_API_KEY:-},ECS_URL=$ALB_URL,DB_CLUSTER_ARN=arn:aws:rds:us-east-1:381491881089:cluster:alex-aurora,DB_SECRET_ARN=arn:aws:secretsmanager:us-east-1:381491881089:secret:alex/aurora/credentials-2HP8fm,DB_NAME=alex_db,AWS_REGION_NAME=$REGION,RESULTS_QUEUE_URL=https://sqs.us-east-1.amazonaws.com/381491881089/alex-results-queue,FRONTEND_RESULTS_QUEUE_URL=https://sqs.us-east-1.amazonaws.com/381491881089/alex-frontend-results}" \
+    > /dev/null 2>&1 && echo "  ✅ Reporter Lambda ECS_URL updated" || true
+  aws lambda update-function-configuration \
+    --function-name alex-scheduler --region $REGION \
+    --environment "Variables={RESEARCH_QUEUE_URL=https://sqs.us-east-1.amazonaws.com/381491881089/alex-research-queue,PLANNER_FUNCTION=alex-planner,DB_CLUSTER_ARN=arn:aws:rds:us-east-1:381491881089:cluster:alex-aurora,DB_SECRET_ARN=arn:aws:secretsmanager:us-east-1:381491881089:secret:alex/aurora/credentials-2HP8fm,DB_NAME=alex_db,AWS_REGION_NAME=$REGION}" \
+    > /dev/null 2>&1 && echo "  ✅ Scheduler Lambda updated" || true
+fi
+
+echo ""
 echo "========================================"
 echo "✅ Session ready!"
 echo "  ALB: ${ALB_URL:-not available}"

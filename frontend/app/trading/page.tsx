@@ -31,6 +31,7 @@ interface Position {
   shares: number
   avg_cost: number
   current_price: number
+  cost_basis: number
   current_value: number
   pnl: number
   pnl_pct: number
@@ -43,6 +44,90 @@ interface Simulation {
   win_count: number
   current_value: number
   mode: string
+}
+
+interface PortfolioSummary {
+  total_market_value: number
+  total_cost_basis: number
+  total_pnl: number
+  total_pnl_pct: number
+  position_count: number
+}
+
+function fmtMoney(n: number) {
+  return n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
+
+function PortfolioHoldingsTable({ positions, summary }: { positions: Position[]; summary: PortfolioSummary | null }) {
+  const total = summary || {
+    total_market_value: positions.reduce((s, p) => s + p.current_value, 0),
+    total_cost_basis:   positions.reduce((s, p) => s + p.cost_basis, 0),
+    total_pnl:          0,
+    total_pnl_pct:      0,
+    position_count:     positions.length,
+  }
+  if (!summary) {
+    total.total_pnl = total.total_market_value - total.total_cost_basis
+    total.total_pnl_pct = total.total_cost_basis > 0 ? (total.total_pnl / total.total_cost_basis) * 100 : 0
+  }
+  const posTotal = total.total_pnl >= 0
+
+  return (
+    <div className="bg-gray-900 rounded-xl border border-gray-800 overflow-hidden mb-4">
+      <div className="overflow-x-auto">
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="border-b border-gray-800 text-gray-500 uppercase tracking-wider">
+              <th className="text-left p-3 font-semibold">Ticker</th>
+              <th className="text-right p-3 font-semibold">Shares</th>
+              <th className="text-right p-3 font-semibold">Avg Cost</th>
+              <th className="text-right p-3 font-semibold">Price</th>
+              <th className="text-right p-3 font-semibold">Total Holding</th>
+              <th className="text-right p-3 font-semibold">Cost Basis</th>
+              <th className="text-right p-3 font-semibold">P&L</th>
+              <th className="text-right p-3 font-semibold">Return</th>
+            </tr>
+          </thead>
+          <tbody>
+            {positions.map((p) => {
+              const up = p.pnl >= 0
+              return (
+                <tr key={p.ticker} className="border-b border-gray-800/50 hover:bg-gray-800/30">
+                  <td className="p-3 font-bold text-white">{p.ticker}</td>
+                  <td className="p-3 text-right text-gray-300">{p.shares}</td>
+                  <td className="p-3 text-right text-gray-400">${p.avg_cost?.toFixed(2)}</td>
+                  <td className="p-3 text-right text-gray-300">${p.current_price?.toFixed(2)}</td>
+                  <td className="p-3 text-right text-white font-medium">${fmtMoney(p.current_value)}</td>
+                  <td className="p-3 text-right text-gray-400">${fmtMoney(p.cost_basis)}</td>
+                  <td className={`p-3 text-right font-medium ${up ? 'text-green-400' : 'text-red-400'}`}>
+                    {up ? '+' : ''}${fmtMoney(p.pnl)}
+                  </td>
+                  <td className={`p-3 text-right font-medium ${up ? 'text-green-400' : 'text-red-400'}`}>
+                    {up ? '+' : ''}{p.pnl_pct?.toFixed(1)}%
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+          <tfoot>
+            <tr className="bg-gray-950 border-t border-indigo-800/50">
+              <td colSpan={4} className="p-3 font-semibold text-indigo-300 uppercase tracking-wider">
+                Portfolio Total ({total.position_count} positions)
+              </td>
+              <td className="p-3 text-right font-bold text-white">${fmtMoney(total.total_market_value)}</td>
+              <td className="p-3 text-right font-bold text-gray-300">${fmtMoney(total.total_cost_basis)}</td>
+              <td className={`p-3 text-right font-bold ${posTotal ? 'text-green-400' : 'text-red-400'}`}>
+                {posTotal ? '+' : ''}${fmtMoney(total.total_pnl)}
+              </td>
+              <td className={`p-3 text-right font-bold ${posTotal ? 'text-green-400' : 'text-red-400'}`}>
+                {posTotal ? '+' : ''}{total.total_pnl_pct.toFixed(1)}%
+              </td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+    </div>
+  )
 }
 
 const AGENTS: Record<string, { color: string; label: string; title: string; bg: string; border: string; text: string }> = {
@@ -153,24 +238,44 @@ function TradeCard({ trade, isLatest }: { trade: Trade; isLatest: boolean }) {
 function PositionCard({ position }: { position: Position }) {
   const pos = position.pnl >= 0
   return (
-    <div className="bg-gray-900 rounded-lg border border-gray-800 p-3">
-      <div className="flex justify-between items-start">
+    <div className="bg-gray-900 rounded-lg border border-gray-800 p-4">
+      <div className="flex justify-between items-start mb-3">
         <div>
-          <span className="font-bold text-white">{position.ticker}</span>
-          <p className="text-xs text-gray-500">{position.shares} shares · avg ${position.avg_cost?.toFixed(2)}</p>
+          <span className="font-bold text-white text-lg">{position.ticker}</span>
+          <p className="text-xs text-gray-500 mt-0.5">
+            {position.shares} shares · avg ${position.avg_cost?.toFixed(2)} · now ${position.current_price?.toFixed(2)}
+          </p>
         </div>
-        <div className="text-right">
-          <p className="text-sm font-semibold text-white">${position.current_value?.toFixed(0)}</p>
-          <p className={`text-xs font-medium ${pos ? 'text-green-400' : 'text-red-400'}`}>
-            {pos ? '+' : ''}{position.pnl?.toFixed(0)} ({position.pnl_pct?.toFixed(1)}%)
+        {position.last_action && (
+          <span className={`text-xs px-2 py-0.5 rounded border ${ACTION_COLORS[position.last_action] || 'text-gray-400'}`}>
+            {position.last_action}
+          </span>
+        )}
+      </div>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
+        <div>
+          <p className="text-gray-500 mb-1">Market Value</p>
+          <p className="text-white font-semibold">${position.current_value?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
+          <p className="text-gray-600 mt-0.5">{position.shares} × ${position.current_price?.toFixed(2)}</p>
+        </div>
+        <div>
+          <p className="text-gray-500 mb-1">Cost Basis</p>
+          <p className="text-gray-300 font-semibold">${position.cost_basis?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
+          <p className="text-gray-600 mt-0.5">{position.shares} × ${position.avg_cost?.toFixed(2)}</p>
+        </div>
+        <div>
+          <p className="text-gray-500 mb-1">P&L</p>
+          <p className={`font-semibold ${pos ? 'text-green-400' : 'text-red-400'}`}>
+            {pos ? '+' : ''}${position.pnl?.toFixed(2)}
+          </p>
+        </div>
+        <div>
+          <p className="text-gray-500 mb-1">Return</p>
+          <p className={`font-semibold ${pos ? 'text-green-400' : 'text-red-400'}`}>
+            {pos ? '+' : ''}{position.pnl_pct?.toFixed(1)}%
           </p>
         </div>
       </div>
-      {position.last_action && (
-        <span className={`text-xs px-2 py-0.5 rounded mt-2 inline-block border ${ACTION_COLORS[position.last_action] || 'text-gray-400'}`}>
-          Last: {position.last_action}
-        </span>
-      )}
     </div>
   )
 }
@@ -180,6 +285,7 @@ export default function TradingPage() {
   const [trades, setTrades]         = useState<Trade[]>([])
   const [positions, setPositions]   = useState<Position[]>([])
   const [simulation, setSimulation] = useState<Simulation | null>(null)
+  const [portfolioSummary, setPortfolioSummary] = useState<PortfolioSummary | null>(null)
   const [enabled, setEnabled]       = useState(true)
   const [loading, setLoading]       = useState(true)
   const [running, setRunning]       = useState(false)
@@ -194,6 +300,7 @@ export default function TradingPage() {
       setTrades(data.trades || [])
       setPositions(data.positions || [])
       setSimulation(data.simulation)
+      setPortfolioSummary(data.portfolio_summary || null)
       setEnabled(toggle.enabled)
     } catch (err) {
       console.error(err)
@@ -228,8 +335,22 @@ export default function TradingPage() {
     })
   }
 
-  const totalPnl = simulation?.total_pnl || 0
   const winRate  = simulation?.total_trades ? Math.round((simulation.win_count / simulation.total_trades) * 100) : 0
+  const summary  = portfolioSummary || {
+    total_market_value: positions.reduce((s, p) => s + p.current_value, 0),
+    total_cost_basis:   positions.reduce((s, p) => s + p.cost_basis, 0),
+    total_pnl:          0,
+    total_pnl_pct:      0,
+    position_count:     positions.length,
+  }
+  if (!portfolioSummary) {
+    summary.total_pnl = summary.total_market_value - summary.total_cost_basis
+    summary.total_pnl_pct = summary.total_cost_basis > 0 ? (summary.total_pnl / summary.total_cost_basis) * 100 : 0
+  }
+  const positionsValue     = summary.total_market_value
+  const positionsCostBasis = summary.total_cost_basis
+  const positionsPnl       = summary.total_pnl
+  const positionsPnlPct    = summary.total_pnl_pct
 
   if (loading) {
     return (
@@ -272,13 +393,14 @@ export default function TradingPage() {
       </div>
 
       <div className="max-w-7xl mx-auto px-4 py-6">
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-6">
+        <div className="grid grid-cols-2 md:grid-cols-6 gap-3 mb-6">
           {[
-            { label: 'Portfolio Value',  value: `$${(simulation?.current_value || 0).toLocaleString()}`, color: 'text-white' },
-            { label: 'Total P&L',        value: `${totalPnl >= 0 ? '+' : ''}$${totalPnl.toFixed(0)}`,   color: totalPnl >= 0 ? 'text-green-400' : 'text-red-400' },
-            { label: 'Total Trades',     value: String(simulation?.total_trades || 0),                    color: 'text-indigo-400' },
-            { label: 'Win Rate',         value: `${winRate}%`,                                            color: 'text-yellow-400' },
-            { label: 'Mode',             value: (simulation?.mode || 'neutral').toUpperCase(),            color: 'text-purple-400' },
+            { label: 'Total Holding',  value: `$${fmtMoney(positionsValue)}`, color: 'text-white' },
+            { label: 'Cost Basis',     value: `$${fmtMoney(positionsCostBasis)}`, color: 'text-gray-300' },
+            { label: 'Total P&L',      value: `${positionsPnl >= 0 ? '+' : ''}$${fmtMoney(positionsPnl)}`, color: positionsPnl >= 0 ? 'text-green-400' : 'text-red-400' },
+            { label: 'Return',         value: `${positionsPnlPct >= 0 ? '+' : ''}${positionsPnlPct.toFixed(1)}%`, color: positionsPnlPct >= 0 ? 'text-green-400' : 'text-red-400' },
+            { label: 'Win Rate',       value: `${winRate}%`, color: 'text-yellow-400' },
+            { label: 'Mode',           value: (simulation?.mode || 'neutral').toUpperCase(), color: 'text-purple-400' },
           ].map(stat => (
             <div key={stat.label} className="bg-gray-900 rounded-xl border border-gray-800 p-3 text-center">
               <p className="text-xs text-gray-500 mb-1">{stat.label}</p>
@@ -324,13 +446,19 @@ export default function TradingPage() {
               </div>
             )}
             {activeTab === 'positions' && (
-              <div className="space-y-2">
+              <div className="space-y-4">
                 {positions.length === 0 ? (
                   <div className="text-center py-16">
                     <p className="text-4xl mb-3">📊</p>
                     <p className="text-sm text-gray-500">No positions yet</p>
-            </div>
-                ) : positions.map((pos, i) => <PositionCard key={i} position={pos} />)}
+                    <p className="text-xs text-gray-600 mt-1">Add holdings on Portfolio, then Run Analysis</p>
+                  </div>
+                ) : (
+                  <>
+                    <PortfolioHoldingsTable positions={positions} summary={portfolioSummary} />
+                    {positions.map((pos, i) => <PositionCard key={i} position={pos} />)}
+                  </>
+                )}
               </div>
             )}
           </div>

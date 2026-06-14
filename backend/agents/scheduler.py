@@ -1,6 +1,6 @@
 """
 Scheduler Lambda — triggered by EventBridge every 2 hours.
-Queues auto-research tasks into SQS research queue.
+Reads all portfolio holdings and invokes the planner for per-user research.
 """
 import os
 import json
@@ -8,51 +8,63 @@ import boto3
 import logging
 from datetime import datetime, timezone
 
+from db_helper import get_all_portfolio_holdings
+
 logger = logging.getLogger(__name__)
 UTC    = timezone.utc
 
-sqs = boto3.client('sqs', region_name=os.environ.get('AWS_REGION_NAME', 'us-east-1'))
+lambda_client = boto3.client('lambda', region_name=os.environ.get('AWS_REGION_NAME', 'us-east-1'))
+PLANNER_FUNCTION = os.environ.get('PLANNER_FUNCTION', 'alex-planner')
 
-RESEARCH_QUEUE_URL = os.environ.get('RESEARCH_QUEUE_URL')
 
-AUTO_RESEARCH_TOPICS = [
-    "Top stock market movers today",
-    "Latest AI technology sector news",
-    "Federal Reserve interest rate updates",
-    "Cryptocurrency market performance",
-    "Energy sector and oil prices today",
-]
+def invoke_portfolio_planner(user: dict, timestamp: str) -> bool:
+    payload = {
+        "task":     "portfolio_research",
+        "user_id":  user["user_id"],
+        "clerk_id": user["clerk_id"],
+        "holdings": user["holdings"],
+        "timestamp": timestamp,
+    }
+    try:
+        lambda_client.invoke(
+            FunctionName   = PLANNER_FUNCTION,
+            InvocationType = 'Event',
+            Payload        = json.dumps(payload),
+        )
+        logger.info(
+            f"Invoked planner for {user['clerk_id']} "
+            f"({len(user['holdings'])} holdings)"
+        )
+        return True
+    except Exception as e:
+        logger.error(f"Planner invoke failed for {user['clerk_id']}: {e}")
+        return False
 
 
 def lambda_handler(event, context):
     logger.info(f"Scheduler triggered: {json.dumps(event)}")
 
-    timestamp    = datetime.now(UTC).isoformat()
-    tasks_queued = 0
+    timestamp     = datetime.now(UTC).isoformat()
+    users_invoked = 0
+    users         = get_all_portfolio_holdings()
 
-    for topic in AUTO_RESEARCH_TOPICS:
-        try:
-            message = {
-                "task_type": "auto_research",
-                "topic":     topic,
-                "timestamp": timestamp,
-                "source":    "eventbridge_scheduler",
-                "priority":  "normal"
-            }
+    if not users:
+        logger.info("No portfolio holdings found — nothing to research")
+        return {
+            "statusCode":    200,
+            "users_invoked": 0,
+            "message":       "No portfolio holdings",
+            "timestamp":     timestamp,
+        }
 
-            sqs.send_message(
-                QueueUrl    = RESEARCH_QUEUE_URL,
-                MessageBody = json.dumps(message)
-            )
-
-            tasks_queued += 1
-            logger.info(f"Queued: {topic}")
-
-        except Exception as e:
-            logger.error(f"Failed to queue '{topic}': {e}")
+    for user in users:
+        if invoke_portfolio_planner(user, timestamp):
+            users_invoked += 1
 
     return {
-        "statusCode":   200,
-        "tasks_queued": tasks_queued,
-        "timestamp":    timestamp
+        "statusCode":    200,
+        "users_invoked": users_invoked,
+        "total_users":   len(users),
+        "timestamp":     timestamp,
+        "message":       f"Portfolio research started for {users_invoked} users",
     }

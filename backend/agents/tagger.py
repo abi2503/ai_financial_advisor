@@ -91,7 +91,18 @@ def lambda_handler(event, context):
 
             print(f"Processing topic: {topic}")
 
-            classification = classify_topic(topic)
+            # Portfolio tasks already carry ticker + dimension — skip re-classification
+            if message.get('task_type') == 'portfolio_research':
+                classification = {
+                    "category":           "stocks",
+                    "priority":           message.get('priority', 'high'),
+                    "tickers":            [message.get('ticker', '')],
+                    "sector":             "other",
+                    "sentiment_expected": "neutral",
+                    "dimension":          message.get('dimension', ''),
+                }
+            else:
+                classification = classify_topic(topic)
 
             enriched = {
                 **message,
