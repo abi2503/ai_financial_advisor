@@ -4,6 +4,7 @@ import { redirect } from 'next/navigation'
 import Navbar from '@/components/Navbar'
 import AlexMarkdown from '@/components/AlexMarkdown'
 import OpsCostWidget from '@/components/OpsCostWidget'
+import FeatureCatalog from '@/components/FeatureCatalog'
 import Link from 'next/link'
 import { Brain, MessageSquare, PieChart, History, Clock, TrendingUp, TrendingDown, Minus, Zap, BarChart2 } from 'lucide-react'
 
@@ -139,7 +140,7 @@ export default async function Dashboard() {
               href:  '/trading',
               icon:  <TrendingUp className="text-indigo-400" size={20} />,
               title: 'Trading Floor',
-              desc:  '6-agent AI debate',
+              desc:  '5-agent debate + votes',
               color: 'border-indigo-500/20 hover:border-indigo-500/40'
             },
           ].map((action) => (
@@ -154,6 +155,8 @@ export default async function Dashboard() {
             </Link>
           ))}
         </div>
+
+        <FeatureCatalog />
 
         {/* Portfolio Research Digests */}
         <div className="bg-gray-900 border border-gray-800 rounded-xl p-6 mb-6">
@@ -255,7 +258,9 @@ export default async function Dashboard() {
           </Link>
         </div>
 
-        <OpsCostWidget />
+        <div id="ops-cost">
+          <OpsCostWidget />
+        </div>
 
       </main>
     </div>

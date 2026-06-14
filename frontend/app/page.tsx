@@ -1,77 +1,8 @@
 import Link from 'next/link'
 import { auth } from '@clerk/nextjs/server'
-import {
-  TrendingUp, Brain, Shield, Zap, BarChart2, Clock,
-  Telescope, Users, MessageSquare, CloudCog, Sparkles, ChevronDown,
-} from 'lucide-react'
-
-const NEW_FEATURES = [
-  {
-    icon:  <MessageSquare className="text-blue-400" size={24} />,
-    badge: 'New',
-    title: 'Unified Alex Chat',
-    desc:  'One chat box — Alex auto-routes to Chat, Fast Research, Deep SEC analysis, or specialist Debater handoff. No manual mode toggle. Streaming markdown tables, news links, and smooth scroll UX.',
-    href:  '/research',
-    accent: 'border-blue-500/30 bg-blue-500/5',
-  },
-  {
-    icon:  <Users className="text-amber-400" size={24} />,
-    badge: 'New',
-    title: 'Trading Floor',
-    desc:  'Five named agents — Marcus, Victoria, Zara, Reid, Elena — debate your holdings in parallel and record every vote. Paper-trades with full bull/bear/risk reasoning visible in the UI.',
-    href:  '/trading',
-    accent: 'border-amber-500/30 bg-amber-500/5',
-  },
-  {
-    icon:  <Telescope className="text-indigo-400" size={24} />,
-    badge: 'New',
-    title: 'Observe',
-    desc:  'Production AI observability — per-query latency, tool/MCP pass-fail, guardrail hits, and agent token costs. See exactly what Alex did on every prompt, not a black box.',
-    href:  '/observe',
-    accent: 'border-indigo-500/30 bg-indigo-500/5',
-  },
-  {
-    icon:  <CloudCog className="text-emerald-400" size={24} />,
-    badge: 'New',
-    title: 'AWS Cost Agent',
-    desc:  'Live ops dashboard widget — today, week, and MTD AWS spend with service breakdown and 7-service health score. Cost Explorer data refreshed every 30 minutes on your dashboard.',
-    href:  '/dashboard',
-    accent: 'border-emerald-500/30 bg-emerald-500/5',
-  },
-]
-
-const CORE_FEATURES = [
-  {
-    icon:  <Clock className="text-blue-400" size={24} />,
-    title: '24/7 Autonomous Research',
-    desc:  'Scheduled workflows generate portfolio digests every 2 hours — no prompting required.',
-  },
-  {
-    icon:  <Brain className="text-purple-400" size={24} />,
-    title: 'Per-User Memory (RAG)',
-    desc:  'pgvector knowledge base scoped to your sessions — Alex remembers your research history.',
-  },
-  {
-    icon:  <Shield className="text-green-400" size={24} />,
-    title: 'Layered Guardrails',
-    desc:  'Off-topic blocks, policy flags, and Bedrock safety — every guardrail logged to Observe.',
-  },
-  {
-    icon:  <TrendingUp className="text-yellow-400" size={24} />,
-    title: 'Real Market Data',
-    desc:  'yfinance live prices, EdgarTools SEC filings, and Playwright MCP for deep web research.',
-  },
-  {
-    icon:  <BarChart2 className="text-red-400" size={24} />,
-    title: 'Multi-Agent Pipeline',
-    desc:  'Planner → Tagger → Reporter agents coordinate via SQS for parallel comparative analysis.',
-  },
-  {
-    icon:  <Zap className="text-orange-400" size={24} />,
-    title: 'Tiered Model Routing',
-    desc:  'Nova Lite for chat and fast lookups; Nova Pro for deep research — cost-efficient by design.',
-  },
-]
+import { Brain, Zap, Sparkles, ChevronDown } from 'lucide-react'
+import { NEW_FEATURES, CORE_FEATURES } from '@/lib/featureData'
+import { FeatureTags } from '@/components/TagPills'
 
 export default async function LandingPage() {
   const { userId } = await auth()
@@ -107,14 +38,14 @@ export default async function LandingPage() {
       <section className="max-w-5xl mx-auto px-6 py-24 text-center">
         <div className="inline-flex items-center gap-2 px-3 py-1 bg-blue-500/10 border border-blue-500/20 rounded-full text-blue-400 text-sm mb-6">
           <Zap size={14} />
-          Autonomous AI Research — Running 24/7
+          always researching
         </div>
         <h1 className="text-5xl font-bold text-white mb-6 leading-tight">
-          Bloomberg-level research
-          <span className="text-blue-400"> at $50/month</span>
+          Research that never
+          <span className="text-blue-400"> clocks out</span>
         </h1>
         <p className="text-xl text-gray-400 mb-10 max-w-2xl mx-auto">
-          Alex researches financial markets, builds a searchable knowledge base, and delivers personalized intelligence automatically.
+          Alex watches markets, remembers your portfolio, and sends the useful stuff.
         </p>
         <div className="flex justify-center">
           {userId ? (
@@ -137,7 +68,7 @@ export default async function LandingPage() {
           href="#catalog"
           className="inline-flex items-center gap-1 mt-10 text-sm text-gray-500 hover:text-gray-300 transition"
         >
-          Explore the Alex catalog
+          scroll for the rundown
           <ChevronDown size={16} className="animate-bounce" />
         </a>
       </section>
@@ -146,13 +77,13 @@ export default async function LandingPage() {
       <section id="catalog" className="max-w-6xl mx-auto px-6 py-16 scroll-mt-8">
         <div className="flex items-center justify-center gap-2 mb-3">
           <Sparkles className="text-blue-400" size={18} />
-          <span className="text-sm font-medium text-blue-400 uppercase tracking-wider">What&apos;s New</span>
+          <span className="text-sm font-medium text-blue-400 uppercase tracking-wider">new</span>
         </div>
         <h2 className="text-3xl font-bold text-white text-center mb-4">
-          Latest Alex capabilities
+          what we just shipped
         </h2>
         <p className="text-gray-500 text-center mb-12 max-w-xl mx-auto text-sm">
-          Sign in and jump straight in — or scroll through the full feature catalog below.
+          log in and go. every card shows the ai + stack behind it.
         </p>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           {NEW_FEATURES.map((f) => (
@@ -171,8 +102,9 @@ export default async function LandingPage() {
                 {f.title}
               </h3>
               <p className="text-gray-400 text-sm leading-relaxed">{f.desc}</p>
+              <FeatureTags ai={f.ai} stack={f.stack} theme={f.theme} />
               <p className="text-xs text-gray-600 mt-4 group-hover:text-blue-400 transition">
-                {userId ? 'Open →' : 'Sign up to access →'}
+                {userId ? 'Open →' : 'sign up first'}
               </p>
             </Link>
           ))}
@@ -185,7 +117,7 @@ export default async function LandingPage() {
           Core platform
         </h2>
         <p className="text-gray-500 text-center mb-12 text-sm">
-          The infrastructure behind every Alex response
+          The infrastructure behind every Alex response.
         </p>
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
           {CORE_FEATURES.map((f) => (
@@ -193,20 +125,20 @@ export default async function LandingPage() {
               <div className="mb-3">{f.icon}</div>
               <h3 className="text-white font-semibold mb-2">{f.title}</h3>
               <p className="text-gray-400 text-sm leading-relaxed">{f.desc}</p>
+              <FeatureTags ai={f.ai} stack={f.stack} theme={f.theme} />
             </div>
           ))}
         </div>
       </section>
 
-      {/* CTA — only show to logged out users */}
+      {/* CTA: only show to logged out users */}
       {!userId && (
         <section className="max-w-2xl mx-auto px-6 py-24 text-center">
           <h2 className="text-3xl font-bold text-white mb-4">
-            Start your free trial today
+            try it free
           </h2>
           <p className="text-gray-400 mb-8">
-            No credit card required. Get access to autonomous financial
-            research immediately.
+            no card. just sign up.
           </p>
           <Link
             href="/sign-up"
@@ -219,8 +151,8 @@ export default async function LandingPage() {
 
       {/* Footer */}
       <footer className="border-t border-gray-800 px-6 py-8 text-center text-gray-600 text-sm">
-        <p>Alex AI © 2026 — Financial Research Platform</p>
-        <p className="mt-1">This platform provides research not financial advice.</p>
+        <p>Alex AI © 2026</p>
+        <p className="mt-1">research only. not financial advice.</p>
       </footer>
 
     </main>
