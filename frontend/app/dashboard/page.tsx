@@ -98,10 +98,10 @@ export default async function Dashboard() {
         {/* Header */}
         <div className="mb-8">
           <h1 className="text-2xl font-bold text-white">
-            {greeting}, {user?.firstName || 'there'} 👋
+            {greeting}, {user?.firstName || 'there'}
           </h1>
           <p className="text-gray-400 mt-1">
-            Alex has been researching while you slept.
+            Portfolio research and platform overview.
           </p>
         </div>
 
@@ -140,7 +140,7 @@ export default async function Dashboard() {
               href:  '/trading',
               icon:  <TrendingUp className="text-indigo-400" size={20} />,
               title: 'Trading Floor',
-              desc:  '5-agent debate + votes',
+              desc:  'Multi-agent debate and voting',
               color: 'border-indigo-500/20 hover:border-indigo-500/40'
             },
           ].map((action) => (

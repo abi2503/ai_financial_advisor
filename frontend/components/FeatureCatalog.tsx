@@ -25,7 +25,7 @@ export default function FeatureCatalog() {
               <p className="text-gray-400 text-sm leading-relaxed">{f.desc}</p>
               <FeatureTags ai={f.ai} stack={f.stack} theme={f.theme} />
               <p className="text-xs text-gray-600 mt-3 group-hover:text-blue-400 transition">
-                Open →
+                Open
               </p>
             </Link>
           ))}

@@ -38,14 +38,14 @@ export default async function LandingPage() {
       <section className="max-w-5xl mx-auto px-6 py-24 text-center">
         <div className="inline-flex items-center gap-2 px-3 py-1 bg-blue-500/10 border border-blue-500/20 rounded-full text-blue-400 text-sm mb-6">
           <Zap size={14} />
-          always researching
+          Autonomous financial research
         </div>
         <h1 className="text-5xl font-bold text-white mb-6 leading-tight">
-          Research that never
-          <span className="text-blue-400"> clocks out</span>
+          Research infrastructure
+          <span className="text-blue-400"> for modern portfolios</span>
         </h1>
         <p className="text-xl text-gray-400 mb-10 max-w-2xl mx-auto">
-          Alex watches markets, remembers your portfolio, and sends the useful stuff.
+          Continuous market monitoring, persistent memory, and multi-agent analysis in one platform.
         </p>
         <div className="flex justify-center">
           {userId ? (
@@ -68,7 +68,7 @@ export default async function LandingPage() {
           href="#catalog"
           className="inline-flex items-center gap-1 mt-10 text-sm text-gray-500 hover:text-gray-300 transition"
         >
-          scroll for the rundown
+          View features
           <ChevronDown size={16} className="animate-bounce" />
         </a>
       </section>
@@ -94,7 +94,7 @@ export default async function LandingPage() {
               <p className="text-gray-400 text-sm leading-relaxed">{f.desc}</p>
               <FeatureTags ai={f.ai} stack={f.stack} theme={f.theme} />
               <p className="text-xs text-gray-600 mt-4 group-hover:text-blue-400 transition">
-                {userId ? 'Open →' : 'sign up first'}
+                {userId ? 'Open' : 'Sign in to access'}
               </p>
             </Link>
           ))}
@@ -125,10 +125,10 @@ export default async function LandingPage() {
       {!userId && (
         <section className="max-w-2xl mx-auto px-6 py-24 text-center">
           <h2 className="text-3xl font-bold text-white mb-4">
-            try it free
+            Get started
           </h2>
           <p className="text-gray-400 mb-8">
-            no card. just sign up.
+            Create an account to access the full platform.
           </p>
           <Link
             href="/sign-up"
@@ -142,7 +142,7 @@ export default async function LandingPage() {
       {/* Footer */}
       <footer className="border-t border-gray-800 px-6 py-8 text-center text-gray-600 text-sm">
         <p>Alex AI © 2026</p>
-        <p className="mt-1">research only. not financial advice.</p>
+        <p className="mt-1">For research purposes only. Not financial advice.</p>
       </footer>
 
     </main>
