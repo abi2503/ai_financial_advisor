@@ -4,7 +4,6 @@ import { redirect } from 'next/navigation'
 import Navbar from '@/components/Navbar'
 import AlexMarkdown from '@/components/AlexMarkdown'
 import OpsCostWidget from '@/components/OpsCostWidget'
-import FeatureCatalog from '@/components/FeatureCatalog'
 import Link from 'next/link'
 import { Brain, MessageSquare, PieChart, History, Clock, TrendingUp, TrendingDown, Minus, Zap, BarChart2 } from 'lucide-react'
 
@@ -101,7 +100,7 @@ export default async function Dashboard() {
             {greeting}, {user?.firstName || 'there'}
           </h1>
           <p className="text-gray-400 mt-1">
-            Portfolio research and platform overview.
+            Portfolio research and platform overview
           </p>
         </div>
 
@@ -156,7 +155,36 @@ export default async function Dashboard() {
           ))}
         </div>
 
-        <FeatureCatalog />
+        {/* Ask Alex */}
+        <div className="bg-gray-900 border border-gray-800 rounded-xl p-6 mb-6">
+          <div className="flex items-center gap-2 mb-4">
+            <Zap className="text-blue-400" size={20} />
+            <h2 className="font-semibold text-white">Ask Alex</h2>
+          </div>
+          <div className="space-y-2">
+            {[
+              'Should I buy NVDA before earnings?',
+              'What\'s happening with AI infrastructure stocks?',
+              'How is the Fed affecting tech valuations?',
+              'Compare NVDA vs AMD for next quarter',
+            ].map((suggestion) => (
+              <Link
+                key={suggestion}
+                href={`/research?q=${encodeURIComponent(suggestion)}`}
+                className="block w-full text-left p-3 bg-gray-800 hover:bg-gray-700 rounded-lg text-gray-300 text-sm transition"
+              >
+                "{suggestion}"
+              </Link>
+            ))}
+          </div>
+          <Link
+            href="/research"
+            className="mt-4 w-full flex items-center justify-center gap-2 py-3 bg-blue-600 hover:bg-blue-500 rounded-lg text-white text-sm font-medium transition"
+          >
+            <MessageSquare size={16} />
+            Open Research Chat
+          </Link>
+        </div>
 
         {/* Portfolio Research Digests */}
         <div className="bg-gray-900 border border-gray-800 rounded-xl p-6 mb-6">
@@ -227,38 +255,7 @@ export default async function Dashboard() {
           )}
         </div>
 
-        {/* Ask Alex */}
-        <div className="bg-gray-900 border border-gray-800 rounded-xl p-6">
-          <div className="flex items-center gap-2 mb-4">
-            <Zap className="text-blue-400" size={20} />
-            <h2 className="font-semibold text-white">Ask Alex</h2>
-          </div>
-          <div className="space-y-2">
-            {[
-              'Should I buy NVDA before earnings?',
-              'What\'s happening with AI infrastructure stocks?',
-              'How is the Fed affecting tech valuations?',
-              'Compare NVDA vs AMD for next quarter',
-            ].map((suggestion) => (
-              <Link
-                key={suggestion}
-                href={`/research?q=${encodeURIComponent(suggestion)}`}
-                className="block w-full text-left p-3 bg-gray-800 hover:bg-gray-700 rounded-lg text-gray-300 text-sm transition"
-              >
-                "{suggestion}"
-              </Link>
-            ))}
-          </div>
-          <Link
-            href="/research"
-            className="mt-4 w-full flex items-center justify-center gap-2 py-3 bg-blue-600 hover:bg-blue-500 rounded-lg text-white text-sm font-medium transition"
-          >
-            <MessageSquare size={16} />
-            Open Research Chat
-          </Link>
-        </div>
-
-        <div id="ops-cost">
+        <div id="ops-cost" className="mb-8">
           <OpsCostWidget />
         </div>
 

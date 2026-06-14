@@ -23,7 +23,7 @@ export default function FeatureCatalog() {
                 {f.title}
               </h3>
               <p className="text-gray-400 text-sm leading-relaxed">{f.desc}</p>
-              <FeatureTags ai={f.ai} stack={f.stack} theme={f.theme} />
+              <FeatureTags ai={f.ai} stack={f.stack} section="new" />
               <p className="text-xs text-gray-600 mt-3 group-hover:text-blue-400 transition">
                 Open
               </p>
@@ -35,7 +35,7 @@ export default function FeatureCatalog() {
       <section className="mb-8">
         <h2 className="text-xl font-bold text-white mb-1">Core platform</h2>
         <p className="text-gray-500 text-sm mb-6">
-          The infrastructure behind every Alex response.
+          The infrastructure behind every Alex response
         </p>
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
           {CORE_FEATURES.map((f) => (
@@ -46,7 +46,7 @@ export default function FeatureCatalog() {
               <div className="mb-3">{f.icon}</div>
               <h3 className="text-white font-semibold mb-2 text-sm">{f.title}</h3>
               <p className="text-gray-400 text-sm leading-relaxed">{f.desc}</p>
-              <FeatureTags ai={f.ai} stack={f.stack} theme={f.theme} />
+              <FeatureTags ai={f.ai} stack={f.stack} section="core" />
             </div>
           ))}
         </div>

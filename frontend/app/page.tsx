@@ -45,7 +45,7 @@ export default async function LandingPage() {
           <span className="text-blue-400"> for modern portfolios</span>
         </h1>
         <p className="text-xl text-gray-400 mb-10 max-w-2xl mx-auto">
-          Continuous market monitoring, persistent memory, and multi-agent analysis in one platform.
+          Continuous market monitoring, persistent memory, and multi-agent analysis in one platform
         </p>
         <div className="flex justify-center">
           {userId ? (
@@ -92,7 +92,7 @@ export default async function LandingPage() {
                 {f.title}
               </h3>
               <p className="text-gray-400 text-sm leading-relaxed">{f.desc}</p>
-              <FeatureTags ai={f.ai} stack={f.stack} theme={f.theme} />
+              <FeatureTags ai={f.ai} stack={f.stack} section="new" />
               <p className="text-xs text-gray-600 mt-4 group-hover:text-blue-400 transition">
                 {userId ? 'Open' : 'Sign in to access'}
               </p>
@@ -107,7 +107,7 @@ export default async function LandingPage() {
           Core platform
         </h2>
         <p className="text-gray-500 text-center mb-12 text-sm">
-          The infrastructure behind every Alex response.
+          The infrastructure behind every Alex response
         </p>
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
           {CORE_FEATURES.map((f) => (
@@ -115,7 +115,7 @@ export default async function LandingPage() {
               <div className="mb-3">{f.icon}</div>
               <h3 className="text-white font-semibold mb-2">{f.title}</h3>
               <p className="text-gray-400 text-sm leading-relaxed">{f.desc}</p>
-              <FeatureTags ai={f.ai} stack={f.stack} theme={f.theme} />
+              <FeatureTags ai={f.ai} stack={f.stack} section="core" />
             </div>
           ))}
         </div>
@@ -128,7 +128,7 @@ export default async function LandingPage() {
             Get started
           </h2>
           <p className="text-gray-400 mb-8">
-            Create an account to access the full platform.
+            Create an account to access the full platform
           </p>
           <Link
             href="/sign-up"
@@ -142,7 +142,7 @@ export default async function LandingPage() {
       {/* Footer */}
       <footer className="border-t border-gray-800 px-6 py-8 text-center text-gray-600 text-sm">
         <p>Alex AI © 2026</p>
-        <p className="mt-1">For research purposes only. Not financial advice.</p>
+        <p className="mt-1">For research purposes only, not financial advice</p>
       </footer>
 
     </main>
