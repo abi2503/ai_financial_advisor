@@ -1,6 +1,6 @@
 import Link from 'next/link'
 import { auth } from '@clerk/nextjs/server'
-import { Brain, Zap, Sparkles, ChevronDown } from 'lucide-react'
+import { Brain, Zap, ChevronDown } from 'lucide-react'
 import { NEW_FEATURES, CORE_FEATURES } from '@/lib/featureData'
 import { FeatureTags } from '@/components/TagPills'
 
@@ -73,18 +73,8 @@ export default async function LandingPage() {
         </a>
       </section>
 
-      {/* New features flashcards */}
+      {/* Feature catalog */}
       <section id="catalog" className="max-w-6xl mx-auto px-6 py-16 scroll-mt-8">
-        <div className="flex items-center justify-center gap-2 mb-3">
-          <Sparkles className="text-blue-400" size={18} />
-          <span className="text-sm font-medium text-blue-400 uppercase tracking-wider">new</span>
-        </div>
-        <h2 className="text-3xl font-bold text-white text-center mb-4">
-          what we just shipped
-        </h2>
-        <p className="text-gray-500 text-center mb-12 max-w-xl mx-auto text-sm">
-          log in and go. every card shows the ai + stack behind it.
-        </p>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           {NEW_FEATURES.map((f) => (
             <Link

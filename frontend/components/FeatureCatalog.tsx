@@ -1,5 +1,4 @@
 import Link from 'next/link'
-import { Sparkles } from 'lucide-react'
 import { NEW_FEATURES, CORE_FEATURES } from '@/lib/featureData'
 import { FeatureTags } from '@/components/TagPills'
 
@@ -7,14 +6,6 @@ export default function FeatureCatalog() {
   return (
     <>
       <section className="mb-8">
-        <div className="flex items-center gap-2 mb-3">
-          <Sparkles className="text-blue-400" size={18} />
-          <span className="text-sm font-medium text-blue-400 uppercase tracking-wider">New</span>
-        </div>
-        <h2 className="text-xl font-bold text-white mb-1">what we just shipped</h2>
-        <p className="text-gray-500 text-sm mb-6">
-          log in and go. every card shows the ai + stack behind it.
-        </p>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {NEW_FEATURES.map((f) => (
             <Link
