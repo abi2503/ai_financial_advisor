@@ -71,6 +71,9 @@ class LatencyTracker:
         self.response_chars = 0
         self.success      = True
         self.partial      = False
+        self.input_tokens  = 0
+        self.output_tokens = 0
+        self.cost_usd      = 0.0
 
     def mark_context_ms(self, ms: int) -> None:
         self.context_ms = ms
@@ -92,6 +95,26 @@ class LatencyTracker:
 
     def set_response(self, text: str) -> None:
         self.response_chars = len(text or "")
+
+    def set_token_usage(self, input_tokens: int, output_tokens: int) -> None:
+        """Record Bedrock usage from response metadata."""
+        from bedrock_cost import calculate_cost, normalize_model_id
+        self.input_tokens  = max(0, int(input_tokens))
+        self.output_tokens = max(0, int(output_tokens))
+        self.cost_usd      = calculate_cost(normalize_model_id(self.model), self.input_tokens, self.output_tokens)
+
+    def _finalize_tokens(self) -> None:
+        """Estimate tokens/cost when Bedrock did not return usage metadata."""
+        if self.input_tokens or self.output_tokens:
+            return
+        if self.response_chars <= 0:
+            return
+        from bedrock_cost import estimate_tokens, calculate_cost, normalize_model_id
+        self.input_tokens  = estimate_tokens(self.query)
+        self.output_tokens = estimate_tokens("x" * self.response_chars)
+        self.cost_usd      = calculate_cost(
+            normalize_model_id(self.model), self.input_tokens, self.output_tokens,
+        )
 
     def _resolve_db_user_id(self, rds) -> Optional[str]:
         if not self.clerk_id or not CLUSTER_ARN:
@@ -128,6 +151,7 @@ class LatencyTracker:
 
         trace = trace or get_trace()
         self.total_ms = int((time.monotonic() - self.t0) * 1000)
+        self._finalize_tokens()
 
         trace_dict = trace.to_dict() if trace else {"tools": [], "mcp_servers": [], "data_sources": []}
         tools = trace_dict["tools"]
@@ -154,6 +178,9 @@ class LatencyTracker:
                 {"name": "apis",   "value": {"stringValue": json.dumps(apis)}},
                 {"name": "ok",     "value": {"booleanValue": self.success}},
                 {"name": "part",   "value": {"booleanValue": self.partial}},
+                {"name": "in_tok", "value": {"longValue":   self.input_tokens}},
+                {"name": "out_tok","value": {"longValue":   self.output_tokens}},
+                {"name": "cost",   "value": {"doubleValue": float(self.cost_usd)}},
             ]
 
             user_sql = ""
@@ -177,7 +204,8 @@ class LatencyTracker:
                         rag_ms, synthesis_ms,
                         model, response_chars,
                         tools_called, mcp_servers, data_sources,
-                        success, partial
+                        success, partial,
+                        input_tokens, output_tokens, cost_usd
                         {', user_id' if db_user else ''}
                         {', first_token_ms' if self.first_token_ms is not None else ''}
                     ) VALUES (
@@ -186,7 +214,8 @@ class LatencyTracker:
                         :ctx, :agent,
                         :model, :chars,
                         :tools::jsonb, :mcps::jsonb, :apis::jsonb,
-                        :ok, :part
+                        :ok, :part,
+                        :in_tok, :out_tok, :cost
                         {', :uid::uuid' if db_user else ''}
                         {', :ft' if self.first_token_ms is not None else ''}
                     )
@@ -195,6 +224,7 @@ class LatencyTracker:
             )
             logger.info(
                 f"Latency flushed: route={self.route} total={self.total_ms}ms "
+                f"tokens={self.input_tokens}in/{self.output_tokens}out cost=${self.cost_usd:.6f} "
                 f"summary={trace.pass_fail_summary() if trace else {}}"
             )
         except Exception as e:

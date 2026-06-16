@@ -270,6 +270,8 @@ p0_migrations = [
     ("qlm.agent_ms", "ALTER TABLE query_latency_metrics ADD COLUMN IF NOT EXISTS agent_ms INTEGER DEFAULT 0"),
     ("qlm.guardrail_ms", "ALTER TABLE query_latency_metrics ADD COLUMN IF NOT EXISTS guardrail_ms INTEGER DEFAULT 0"),
     ("qlm.success", "ALTER TABLE query_latency_metrics ADD COLUMN IF NOT EXISTS success BOOLEAN DEFAULT true"),
+    ("qlm.input_tokens", "ALTER TABLE query_latency_metrics ADD COLUMN IF NOT EXISTS input_tokens INTEGER DEFAULT 0"),
+    ("qlm.output_tokens", "ALTER TABLE query_latency_metrics ADD COLUMN IF NOT EXISTS output_tokens INTEGER DEFAULT 0"),
     ("ops_snapshots.daily_cost", "ALTER TABLE ops_snapshots ADD COLUMN IF NOT EXISTS daily_cost NUMERIC(10,4) DEFAULT 0"),
 ]
 

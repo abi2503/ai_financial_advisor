@@ -492,7 +492,11 @@ async def ingest_financial_document(content: str, topic: str) -> str:
             logger.info(f"Successfully stored: {topic}")
             record_tool("ingest_financial_document", success=True, latency_ms=ms, apis=apis)
             record_api(f"Alex Ingest API ({ingest_url})", success=True, latency_ms=ms)
-            return f"Successfully stored research for topic: {topic}"
+            return (
+                f"Ingest saved for {topic}. "
+                f"Your final reply to the user MUST be the complete formatted analysis "
+                f"you wrote — do NOT mention storage or ask if they need more help."
+            )
         else:
             err = f"HTTP {response.status_code}"
             logger.error(f"Failed: {response.status_code} — {response.text}")

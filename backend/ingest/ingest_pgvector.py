@@ -7,6 +7,9 @@ import boto3
 import uuid
 import logging
 from datetime import datetime, timezone
+from botocore.exceptions import ClientError
+
+from rag_utils import chunk_content
 
 UTC    = timezone.utc
 logger = logging.getLogger()
@@ -68,40 +71,46 @@ def _resolve_db_user_id(clerk_id: str) -> str | None:
     return None
 
 
-def get_embeddings(text: str) -> list:
-    """Generate embeddings via SageMaker all-MiniLM-L6-v2"""
+def get_embeddings(text: str, retries: int = 5) -> list:
+    """Generate embeddings via SageMaker all-MiniLM-L6-v2 (with throttle retry)."""
     if len(text) > 300:
         text = text[:300]
-    response         = sagemaker_runtime.invoke_endpoint(
-        EndpointName = SAGEMAKER_ENDPOINT,
-        Body         = json.dumps({"inputs": text}),
-        ContentType  = "application/json"
-    )
-    result           = json.loads(response["Body"].read())
-    token_embeddings = result[0]
-    num_tokens       = len(token_embeddings)
-    vector_size      = len(token_embeddings[0])
-    vector = [
-        sum(token_embeddings[t][i] for t in range(num_tokens)) / num_tokens
-        for i in range(vector_size)
-    ]
-    return vector
+    last_err = None
+    for attempt in range(retries):
+        try:
+            response         = sagemaker_runtime.invoke_endpoint(
+                EndpointName = SAGEMAKER_ENDPOINT,
+                Body         = json.dumps({"inputs": text}),
+                ContentType  = "application/json"
+            )
+            result           = json.loads(response["Body"].read())
+            token_embeddings = result[0]
+            num_tokens       = len(token_embeddings)
+            vector_size      = len(token_embeddings[0])
+            return [
+                sum(token_embeddings[t][i] for t in range(num_tokens)) / num_tokens
+                for i in range(vector_size)
+            ]
+        except ClientError as e:
+            last_err = e
+            code = e.response.get("Error", {}).get("Code", "")
+            if code in ("ThrottlingException", "ServiceUnavailable") and attempt < retries - 1:
+                wait = min(8, 2 ** attempt)
+                logger.warning(f"SageMaker throttle — retry {attempt + 1}/{retries} in {wait}s")
+                time.sleep(wait)
+                continue
+            raise
+    raise last_err or RuntimeError("embedding failed")
 
 
-def handle_ingest_pgvector(body: dict) -> dict:
-    content = body.get("content", "").strip()
-    topic   = body.get("topic", "general")
-    if not content:
-        return {"statusCode": 400, "body": json.dumps({"error": "content required"})}
-
+def _insert_vector(body: dict, content: str, chunk_index: int) -> str:
+    topic        = body.get("topic", "general")
     session_id   = (body.get("session_id") or "")[:36]
     clerk_id     = body.get("user_id") or body.get("clerk_id") or ""
     db_user_id   = _resolve_db_user_id(clerk_id) if clerk_id else None
-    chunk_index  = int(body.get("chunk_index", 0))
     query_text   = (body.get("query") or "")[:500]
     chunk_type   = (body.get("chunk_type") or "document")[:30]
 
-    logger.info(f"Ingesting to pgvector: {topic} user={db_user_id or 'global'}")
     vector     = get_embeddings(content)
     vector_id  = str(uuid.uuid4())
     vector_str = "[" + ",".join(str(v) for v in vector) + "]"
@@ -130,18 +139,38 @@ def handle_ingest_pgvector(body: dict) -> dict:
         VALUES
           (:id::uuid, :topic, :content, :embedding::vector, :source, :session_id, :chunk_index, :query, :chunk_type{user_val})
         """,
-        params
+        params,
     )
+    return vector_id
 
-    logger.info(f"Stored vector {vector_id} in pgvector")
+
+def handle_ingest_pgvector(body: dict) -> dict:
+    content = body.get("content", "").strip()
+    topic   = body.get("topic", "general")
+    if not content:
+        return {"statusCode": 400, "body": json.dumps({"error": "content required"})}
+
+    chunks = chunk_content(content)
+    logger.info(f"Ingesting to pgvector: {topic} — {len(chunks)} chunk(s)")
+
+    vector_ids = []
+    for i, chunk in enumerate(chunks):
+        if i > 0:
+            time.sleep(0.25)  # gentle pacing for SageMaker serverless
+        vid = _insert_vector(body, chunk, chunk_index=i)
+        vector_ids.append(vid)
+        logger.info(f"Stored chunk {i + 1}/{len(chunks)} → {vid}")
+
     return {
         "statusCode": 200,
         "body": json.dumps({
-            "message":   "Successfully ingested",
-            "vector_id": vector_id,
-            "topic":     topic,
-            "backend":   "pgvector"
-        })
+            "message":    "Successfully ingested",
+            "vector_id":  vector_ids[0],
+            "vector_ids": vector_ids,
+            "chunks":     len(chunks),
+            "topic":      topic,
+            "backend":    "pgvector",
+        }),
     }
 
 
@@ -151,79 +180,119 @@ def handle_search_pgvector(body: dict) -> dict:
     if not query:
         return {"statusCode": 400, "body": json.dumps({"error": "query required"})}
 
-    logger.info(f"Searching pgvector: {query}")
-    query_vector = get_embeddings(query)
-    vector_str   = "[" + ",".join(str(v) for v in query_vector) + "]"
+    try:
+        logger.info(f"Searching pgvector: {query}")
+        query_vector = get_embeddings(query)
+        vector_str   = "[" + ",".join(str(v) for v in query_vector) + "]"
 
-    response = execute_with_retry(
-        """
-        SELECT
-            id::text,
-            topic,
-            content,
-            source,
-            created_at::text,
-            1 - (embedding <=> :query_vec::vector) AS score
-        FROM research_vectors
-        ORDER BY embedding <=> :query_vec::vector
-        LIMIT :top_k
-        """,
-        [
-            {"name": "query_vec", "value": {"stringValue": vector_str}},
-            {"name": "top_k",     "value": {"longValue": top_k}},
+        response = execute_with_retry(
+            """
+            SELECT id::text, topic, content, source, created_at::text, score
+            FROM (
+                SELECT
+                    id, topic, content, source, created_at,
+                    (1 - (embedding <=> :query_vec::vector)) AS score
+                FROM research_vectors
+                WHERE embedding IS NOT NULL
+                  AND topic NOT ILIKE '%debug test%'
+            ) ranked
+            ORDER BY score DESC
+            LIMIT :top_k
+            """,
+            [
+                {"name": "query_vec", "value": {"stringValue": vector_str}},
+                {"name": "top_k",     "value": {"longValue": top_k}},
+            ],
+        )
+
+        results = [
+            {
+                "id":        r[0]["stringValue"],
+                "topic":     r[1]["stringValue"],
+                "content":   r[2]["stringValue"],
+                "source":    r[3]["stringValue"],
+                "timestamp": r[4]["stringValue"],
+                "score":     round(r[5]["doubleValue"], 4),
+            }
+            for r in response.get("records", [])
         ]
-    )
 
-    results = [
-        {
-            "id":        r[0]["stringValue"],
-            "topic":     r[1]["stringValue"],
-            "content":   r[2]["stringValue"],
-            "source":    r[3]["stringValue"],
-            "timestamp": r[4]["stringValue"],
-            "score":     round(r[5]["doubleValue"], 4),
+        logger.info(f"Found {len(results)} results")
+        return {
+            "statusCode": 200,
+            "body": json.dumps({
+                "query":   query,
+                "results": results,
+                "count":   len(results),
+                "backend": "pgvector",
+            }),
         }
-        for r in response.get("records", [])
-    ]
-
-    logger.info(f"Found {len(results)} results")
-    return {
-        "statusCode": 200,
-        "body": json.dumps({
-            "query":   query,
-            "results": results,
-            "count":   len(results),
-            "backend": "pgvector"
-        })
-    }
+    except ClientError as e:
+        code = e.response.get("Error", {}).get("Code", "ClientError")
+        logger.error(f"Search failed ({code}): {e}")
+        return {
+            "statusCode": 503,
+            "body": json.dumps({
+                "error":   f"Embedding service busy ({code}) — retry shortly",
+                "query":   query,
+                "results": [],
+                "count":   0,
+                "backend": "pgvector",
+            }),
+        }
+    except Exception as e:
+        logger.error(f"Search failed: {e}")
+        return {
+            "statusCode": 500,
+            "body": json.dumps({
+                "error":   str(e)[:200],
+                "query":   query,
+                "results": [],
+                "count":   0,
+                "backend": "pgvector",
+            }),
+        }
 
 
 def lambda_handler(event, context):
     logger.info(f"Backend: {VECTOR_BACKEND}")
-    path   = event.get("path", "/ingest")
+    path   = (event.get("path") or event.get("rawPath") or "/ingest").split("?")[0]
+    if not path.startswith("/"):
+        path = "/" + path
+    # API Gateway stage paths: /prod/search → /search
+    for part in ("/prod", "/dev", "/staging"):
+        if path.startswith(part + "/"):
+            path = path[len(part):]
     method = event.get("httpMethod", "POST")
 
     try:
-        body = json.loads(event.get("body", "{}"))
+        body = json.loads(event.get("body") or "{}")
     except json.JSONDecodeError:
         return {
             "statusCode": 400,
             "headers":    {"Content-Type": "application/json"},
-            "body":       json.dumps({"error": "Invalid JSON"})
+            "body":       json.dumps({"error": "Invalid JSON"}),
         }
 
-    if path == "/search" and method == "POST":
-        result = handle_search_pgvector(body)
-    elif path == "/ingest" and method == "POST":
-        result = handle_ingest_pgvector(body)
-    else:
+    try:
+        if path.endswith("/search") and method == "POST":
+            result = handle_search_pgvector(body)
+        elif path.endswith("/ingest") and method == "POST":
+            result = handle_ingest_pgvector(body)
+        else:
+            result = {
+                "statusCode": 404,
+                "body":       json.dumps({"error": f"Unknown path: {path}"}),
+            }
+    except Exception as e:
+        logger.exception("Unhandled error")
         result = {
-            "statusCode": 404,
-            "body":       json.dumps({"error": f"Unknown path: {path}"})
+            "statusCode": 500,
+            "body":       json.dumps({"error": str(e)[:200]}),
         }
 
     result["headers"] = {
         "Content-Type":                "application/json",
-        "Access-Control-Allow-Origin": "*"
+        "Access-Control-Allow-Origin": "*",
     }
     return result

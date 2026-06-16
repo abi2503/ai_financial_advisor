@@ -104,7 +104,7 @@ def get_conversation_context(user_id: str, session_id: str, limit: int = 5) -> s
             for m in recent
         ])
 
-        return f"\nCONVERSATION HISTORY (last {len(recent)} messages):\n{formatted}\n\nUse this to answer follow-up questions naturally.\n"
+        return f"\nCONVERSATION HISTORY (last {len(recent)} messages):\n{formatted}\n\nUse this to answer follow-up questions naturally. If the user says \"its\", \"it\", or \"that stock\", research the ticker from the most recent ALEX message — not portfolio holdings.\n"
     except Exception as e:
         logger.error(f"Conversation context error: {e}")
         return ""
@@ -125,13 +125,17 @@ def get_prior_research(query: str, user_id: str, days: int = 30, top_k: int = 3)
         # user_id is Clerk ID — include global vectors (user_id NULL) + this user's vectors
         result = execute_sql(
             f"""
-            SELECT rv.content, rv.topic, rv.created_at,
-                   1 - (rv.embedding <=> '{embedding_str}'::vector) as similarity
-            FROM research_vectors rv
+            SELECT rv.content, rv.topic, rv.created_at, rv.similarity
+            FROM (
+                SELECT content, topic, created_at, user_id,
+                       (1 - (embedding <=> '{embedding_str}'::vector)) AS similarity
+                FROM research_vectors
+                WHERE created_at > :cutoff
+                  AND topic NOT ILIKE '%debug test%'
+            ) rv
             LEFT JOIN users u ON u.id = rv.user_id
-            WHERE rv.created_at > :cutoff
-              AND (rv.user_id IS NULL OR u.clerk_id = :user_id)
-            ORDER BY rv.embedding <=> '{embedding_str}'::vector
+            WHERE (rv.user_id IS NULL OR u.clerk_id = :user_id)
+            ORDER BY rv.similarity DESC
             LIMIT :top_k
             """,
             [
@@ -233,11 +237,16 @@ def detect_contradictions(query: str, new_content: str, user_id: str) -> str:
         result = execute_sql(
             f"""
             SELECT rv.content, rv.topic
-            FROM research_vectors rv
+            FROM (
+                SELECT content, topic, user_id,
+                       (1 - (embedding <=> '{embedding_str}'::vector)) AS similarity
+                FROM research_vectors
+                WHERE created_at > :cutoff
+                  AND topic NOT ILIKE '%debug test%'
+            ) rv
             LEFT JOIN users u ON u.id = rv.user_id
-            WHERE rv.created_at > :cutoff
-              AND (rv.user_id IS NULL OR u.clerk_id = :user_id)
-            ORDER BY rv.embedding <=> '{embedding_str}'::vector
+            WHERE (rv.user_id IS NULL OR u.clerk_id = :user_id)
+            ORDER BY rv.similarity DESC
             LIMIT 1
             """,
             [

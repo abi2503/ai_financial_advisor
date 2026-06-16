@@ -36,8 +36,10 @@ function formatUpdated(iso: string | null) {
 }
 
 export default function OpsCostWidget() {
-  const [data, setData]       = useState<OpsData | null>(null)
-  const [loading, setLoading] = useState(true)
+  const [data, setData]           = useState<OpsData | null>(null)
+  const [loading, setLoading]     = useState(true)
+  const [refreshing, setRefreshing] = useState(false)
+  const [refreshError, setRefreshError] = useState<string | null>(null)
 
   const fetchOps = useCallback(async () => {
     try {
@@ -52,12 +54,33 @@ export default function OpsCostWidget() {
         updatedAt:      json.updatedAt || json.ops?.last_run || null,
         pollIntervalMs: json.pollIntervalMs || 1800000,
       })
+      return true
     } catch (e) {
       console.error('Ops poll error:', e)
+      return false
     } finally {
       setLoading(false)
     }
   }, [])
+
+  const refreshNow = useCallback(async () => {
+    setRefreshing(true)
+    setRefreshError(null)
+    try {
+      const res  = await fetch('/api/ops', { method: 'POST' })
+      const json = await res.json()
+      if (!res.ok) {
+        setRefreshError(json.error || 'Ops agent run failed')
+        return
+      }
+      await fetchOps()
+    } catch (e) {
+      console.error('Ops refresh error:', e)
+      setRefreshError('Could not reach ops agent — check AWS credentials')
+    } finally {
+      setRefreshing(false)
+    }
+  }, [fetchOps])
 
   useEffect(() => {
     fetchOps()
@@ -170,9 +193,17 @@ export default function OpsCostWidget() {
       <div className="text-xs text-gray-600 text-center">
         Ops agent updates every 30 min · Last refresh: {formatUpdated(data?.updatedAt || null)}
         {' · '}
-        <button onClick={fetchOps} className="text-blue-400 hover:text-blue-300 underline">
-          Refresh now
+        <button
+          type="button"
+          onClick={refreshNow}
+          disabled={refreshing}
+          className="text-blue-400 hover:text-blue-300 underline disabled:opacity-50 disabled:cursor-wait"
+        >
+          {refreshing ? 'Running ops agent…' : 'Refresh now'}
         </button>
+        {refreshError && (
+          <p className="text-red-400 mt-2">{refreshError}</p>
+        )}
       </div>
     </div>
   )

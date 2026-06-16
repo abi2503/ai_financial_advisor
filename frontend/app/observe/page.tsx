@@ -45,6 +45,16 @@ interface QuerySummary {
   p50_ms: number
   p95_ms: number
   avg_first_token_ms: number
+  input_tokens?: number
+  output_tokens?: number
+  total_cost?: number
+}
+
+interface ResearchTotals {
+  input_tokens: number
+  output_tokens: number
+  total_cost: number
+  count: number
 }
 
 interface DataSource {
@@ -94,6 +104,9 @@ interface RecentQuery {
   response_chars: number
   success: boolean
   created_at: string
+  input_tokens: number
+  output_tokens: number
+  cost_usd: number
 }
 
 const AGENT_COLORS: Record<string, string> = {
@@ -113,10 +126,29 @@ const AGENT_LABELS: Record<string, string> = {
 }
 
 const ROUTE_COLORS: Record<string, string> = {
-  fast:   'bg-blue-500/20 text-blue-400 border-blue-500/30',
-  stream: 'bg-cyan-500/20 text-cyan-400 border-cyan-500/30',
-  deep:   'bg-purple-500/20 text-purple-400 border-purple-500/30',
-  multi:  'bg-orange-500/20 text-orange-400 border-orange-500/30',
+  chat:         'bg-emerald-500/20 text-emerald-400 border-emerald-500/30',
+  fast:         'bg-blue-500/20 text-blue-400 border-blue-500/30',
+  stream:       'bg-cyan-500/20 text-cyan-400 border-cyan-500/30',
+  deep:         'bg-purple-500/20 text-purple-400 border-purple-500/30',
+  'deep-stream':'bg-purple-500/20 text-purple-400 border-purple-500/30',
+  debater:      'bg-pink-500/20 text-pink-400 border-pink-500/30',
+  multi:        'bg-orange-500/20 text-orange-400 border-orange-500/30',
+}
+
+/** Display label for route tags on observe cards */
+const ROUTE_LABELS: Record<string, string> = {
+  chat: 'chat observability',
+}
+
+function routeLabel(route: string) {
+  return ROUTE_LABELS[route] || route
+}
+
+function costLabel(usd: number) {
+  if (usd <= 0) return '$0.000000'
+  if (usd < 0.0001) return `$${usd.toFixed(6)}`
+  if (usd < 0.01) return `$${usd.toFixed(5)}`
+  return `$${usd.toFixed(4)}`
 }
 
 function msLabel(ms: number) {
@@ -154,6 +186,7 @@ export default function ObservePage() {
   const [guardrails, setGuardrails] = useState<GuardrailLog[]>([])
   const [querySummary, setQuerySummary] = useState<QuerySummary[]>([])
   const [recentQueries, setRecentQueries] = useState<RecentQuery[]>([])
+  const [researchTotals, setResearchTotals] = useState<ResearchTotals | null>(null)
   const [expanded, setExpanded]     = useState<string | null>(null)
   const [loading, setLoading]       = useState(true)
 
@@ -166,6 +199,7 @@ export default function ObservePage() {
       setGuardrails(data.guardrails || [])
       setQuerySummary(data.querySummary || [])
       setRecentQueries(data.recentQueries || [])
+      setResearchTotals(data.researchTotals || null)
     } catch (err) {
       console.error(err)
     } finally {
@@ -202,7 +236,7 @@ export default function ObservePage() {
           <div>
             <h1 className="text-xl font-bold text-white">🔭 Alex Observability</h1>
             <p className="text-xs text-gray-500 mt-0.5">
-              Per-query latency, tools, MCP servers, and API sources — last 7 days
+              Per-query latency, LLM tokens, AWS Bedrock cost, tools & APIs — last 7 days
             </p>
           </div>
           <button onClick={() => { setLoading(true); fetchData() }}
@@ -229,6 +263,29 @@ export default function ObservePage() {
         {/* ── RESEARCH TAB ── */}
         {tab === 'research' && (
           <>
+            {/* LLM cost summary */}
+            {researchTotals && researchTotals.count > 0 && (
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
+                <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
+                  <p className="text-xs text-gray-500 uppercase">Queries (7d)</p>
+                  <p className="text-2xl font-bold text-white mt-1">{researchTotals.count}</p>
+                </div>
+                <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
+                  <p className="text-xs text-gray-500 uppercase">Input tokens</p>
+                  <p className="text-2xl font-bold text-cyan-400 mt-1">{researchTotals.input_tokens.toLocaleString()}</p>
+                </div>
+                <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
+                  <p className="text-xs text-gray-500 uppercase">Output tokens</p>
+                  <p className="text-2xl font-bold text-blue-400 mt-1">{researchTotals.output_tokens.toLocaleString()}</p>
+                </div>
+                <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
+                  <p className="text-xs text-gray-500 uppercase">AWS Bedrock cost</p>
+                  <p className="text-2xl font-bold text-green-400 mt-1">{costLabel(researchTotals.total_cost)}</p>
+                  <p className="text-xs text-gray-600 mt-1">Nova Lite/Pro list pricing</p>
+                </div>
+              </div>
+            )}
+
             {/* Speed summary by route */}
             <h3 className="text-sm font-semibold text-gray-400 mb-3 uppercase tracking-wider">
               Query Response Speed (7d)
@@ -247,7 +304,7 @@ export default function ObservePage() {
                   <div key={s.route} className="bg-gray-900 border border-gray-800 rounded-xl p-4">
                     <div className="flex items-center gap-2 mb-2">
                       <span className={`text-xs px-2 py-0.5 rounded border font-medium ${ROUTE_COLORS[s.route] || 'bg-gray-800 text-gray-400'}`}>
-                        {s.route}
+                        {routeLabel(s.route)}
                       </span>
                       <span className="text-xs text-gray-600">{s.count} queries</span>
                     </div>
@@ -268,6 +325,12 @@ export default function ObservePage() {
                         <p className="text-gray-500">First token</p>
                         <p className="text-cyan-400">{s.avg_first_token_ms ? msLabel(s.avg_first_token_ms) : '—'}</p>
                       </div>
+                      {(s.total_cost ?? 0) > 0 && (
+                        <div className="col-span-2">
+                          <p className="text-gray-500">Route cost</p>
+                          <p className="text-green-400">{costLabel(s.total_cost || 0)}</p>
+                        </div>
+                      )}
                     </div>
                   </div>
                 ))}
@@ -291,7 +354,7 @@ export default function ObservePage() {
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 mb-1 flex-wrap">
                           <span className={`text-xs px-2 py-0.5 rounded border ${ROUTE_COLORS[q.route] || 'bg-gray-800 text-gray-400'}`}>
-                            {q.route}
+                            {routeLabel(q.route)}
                           </span>
                           <span className={`text-xs ${q.success ? 'text-green-400' : 'text-red-400'}`}>
                             {q.success ? '✓ success' : '✗ failed'}
@@ -309,6 +372,9 @@ export default function ObservePage() {
                         <p className="text-lg font-bold text-indigo-400">{msLabel(q.total_ms)}</p>
                         {q.first_token_ms && (
                           <p className="text-xs text-cyan-400">1st token {msLabel(q.first_token_ms)}</p>
+                        )}
+                        {(q.cost_usd > 0 || q.input_tokens > 0) && (
+                          <p className="text-xs text-green-400 mt-0.5">{costLabel(q.cost_usd)}</p>
                         )}
                       </div>
                     </div>
@@ -330,6 +396,32 @@ export default function ObservePage() {
                           )}
                         </div>
                       )}
+
+                      {/* LLM statistics */}
+                      <div>
+                        <p className="text-xs font-semibold text-gray-500 uppercase mb-2">LLM statistics (AWS Bedrock)</p>
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
+                          <div className="bg-gray-800/50 rounded-lg p-3">
+                            <p className="text-gray-500">Input tokens</p>
+                            <p className="text-cyan-400 font-bold text-sm">{q.input_tokens.toLocaleString()}</p>
+                          </div>
+                          <div className="bg-gray-800/50 rounded-lg p-3">
+                            <p className="text-gray-500">Output tokens</p>
+                            <p className="text-blue-400 font-bold text-sm">{q.output_tokens.toLocaleString()}</p>
+                          </div>
+                          <div className="bg-gray-800/50 rounded-lg p-3">
+                            <p className="text-gray-500">Total tokens</p>
+                            <p className="text-white font-bold text-sm">{(q.input_tokens + q.output_tokens).toLocaleString()}</p>
+                          </div>
+                          <div className="bg-gray-800/50 rounded-lg p-3">
+                            <p className="text-gray-500">Cost / query</p>
+                            <p className="text-green-400 font-bold text-sm">{costLabel(q.cost_usd)}</p>
+                          </div>
+                        </div>
+                        {q.model && (
+                          <p className="text-xs text-gray-600 mt-2">Model: {q.model.replace('bedrock/', '')}</p>
+                        )}
+                      </div>
 
                       {/* Stage breakdown */}
                       <div>

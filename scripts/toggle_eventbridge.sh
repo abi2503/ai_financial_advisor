@@ -9,7 +9,12 @@
 #   bash scripts/toggle_eventbridge.sh status
 # ============================================
 
-source ../../.env
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -f "$SCRIPT_DIR/../.env" ]; then
+  set -a
+  source "$SCRIPT_DIR/../.env"
+  set +a
+fi
 
 SCHEDULE_NAME="alex-auto-research"
 REGION=${DEFAULT_AWS_REGION:-us-east-1}
@@ -122,6 +127,3 @@ case "$1" in
     ;;
 
 esac
-ENDOFSCRIPT
-
-chmod +x scripts/toggle_eventbridge.sh

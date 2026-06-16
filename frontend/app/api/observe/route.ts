@@ -181,6 +181,7 @@ export async function GET(req: NextRequest) {
     // Research query latency (last 7 days, current user)
     let querySummary: any[] = []
     let recentQueries: any[] = []
+    let researchTotals = { input_tokens: 0, output_tokens: 0, total_cost: 0, count: 0 }
     try {
       const summaryResult = await executeWithRetry(`
         SELECT
@@ -189,7 +190,10 @@ export async function GET(req: NextRequest) {
           ROUND(AVG(q.total_ms))::int as avg_ms,
           ROUND(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY q.total_ms))::int as p50_ms,
           ROUND(PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY q.total_ms))::int as p95_ms,
-          ROUND(AVG(q.first_token_ms))::int as avg_first_token_ms
+          ROUND(AVG(q.first_token_ms))::int as avg_first_token_ms,
+          COALESCE(SUM(q.input_tokens), 0)::bigint as input_tokens,
+          COALESCE(SUM(q.output_tokens), 0)::bigint as output_tokens,
+          COALESCE(SUM(q.cost_usd), 0)::float as total_cost
         FROM query_latency_metrics q
         JOIN users u ON u.id = q.user_id
         WHERE u.clerk_id = :clerk_id
@@ -205,14 +209,25 @@ export async function GET(req: NextRequest) {
         p50_ms:            parseInt(String(val(row[3]) || 0)),
         p95_ms:            parseInt(String(val(row[4]) || 0)),
         avg_first_token_ms: parseInt(String(val(row[5]) || 0)),
+        input_tokens:      parseInt(String(val(row[6]) || 0)),
+        output_tokens:     parseInt(String(val(row[7]) || 0)),
+        total_cost:        parseFloat(String(val(row[8]) || 0)),
       }))
+
+      researchTotals = querySummary.reduce((acc, r) => ({
+        input_tokens:  acc.input_tokens + (r.input_tokens || 0),
+        output_tokens: acc.output_tokens + (r.output_tokens || 0),
+        total_cost:    acc.total_cost + (r.total_cost || 0),
+        count:         acc.count + (r.count || 0),
+      }), { input_tokens: 0, output_tokens: 0, total_cost: 0, count: 0 })
 
       const recentResult = await executeWithRetry(`
         SELECT
           q.query_id, q.query, q.route, q.model,
           q.total_ms, q.first_token_ms, q.context_ms, q.agent_ms, q.guardrail_ms,
           q.tools_called::text, q.mcp_servers::text, q.data_sources::text,
-          q.response_chars, q.success, q.created_at::text
+          q.response_chars, q.success, q.created_at::text,
+          COALESCE(q.input_tokens, 0), COALESCE(q.output_tokens, 0), COALESCE(q.cost_usd, 0)
         FROM query_latency_metrics q
         JOIN users u ON u.id = q.user_id
         WHERE u.clerk_id = :clerk_id
@@ -244,15 +259,18 @@ export async function GET(req: NextRequest) {
           response_chars: parseInt(String(val(row[12]) || 0)),
           success:        row[13]?.booleanValue ?? true,
           created_at:     row[14]?.stringValue,
+          input_tokens:   parseInt(String(val(row[15]) || 0)),
+          output_tokens:  parseInt(String(val(row[16]) || 0)),
+          cost_usd:       parseFloat(String(val(row[17]) || 0)),
         }
       })
     } catch (e) {
       console.error('Query metrics unavailable:', e)
     }
 
-    return NextResponse.json({ agents, platform, guardrails, trend, querySummary, recentQueries })
+    return NextResponse.json({ agents, platform, guardrails, trend, querySummary, recentQueries, researchTotals })
   } catch (error) {
     console.error('Observe API error:', error)
-    return NextResponse.json({ agents: [], platform: null, guardrails: [], trend: [], querySummary: [], recentQueries: [], error: 'DB unavailable' })
+    return NextResponse.json({ agents: [], platform: null, guardrails: [], trend: [], querySummary: [], recentQueries: [], researchTotals: { input_tokens: 0, output_tokens: 0, total_cost: 0, count: 0 }, error: 'DB unavailable' })
   }
 }

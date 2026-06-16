@@ -287,6 +287,10 @@ export default function TradingPage() {
   const [simulation, setSimulation] = useState<Simulation | null>(null)
   const [portfolioSummary, setPortfolioSummary] = useState<PortfolioSummary | null>(null)
   const [enabled, setEnabled]       = useState(true)
+  const [resetOnEnable, setResetOnEnable] = useState(false)
+  const [resetting, setResetting]   = useState(false)
+  const [showResetConfirm, setShowResetConfirm] = useState(false)
+  const [contextMessage, setContextMessage] = useState<string | null>(null)
   const [loading, setLoading]       = useState(true)
   const [running, setRunning]       = useState(false)
   const [lastRun, setLastRun]       = useState<string | null>(null)
@@ -327,12 +331,47 @@ export default function TradingPage() {
 
   const toggleTrading = async () => {
     const newState = !enabled
+    const shouldReset = newState && resetOnEnable
     setEnabled(newState)
-    await fetch('/api/trading/toggle', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ enabled: newState })
-    })
+    try {
+      const res = await fetch('/api/trading/toggle', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: newState, reset_context: shouldReset }),
+      })
+      const data = await res.json()
+      if (data.reset?.simulation_id) {
+        setContextMessage(data.reset.positions_seeded
+          ? `Fresh debate context — ${data.reset.positions_seeded} position(s) seeded from portfolio.`
+          : 'Fresh debate context — add portfolio holdings to seed positions.')
+        await fetchData()
+      }
+    } catch (err) {
+      console.error(err)
+      setEnabled(!newState)
+    }
+  }
+
+  const resetDebateContext = async () => {
+    setResetting(true)
+    setShowResetConfirm(false)
+    try {
+      const res = await fetch('/api/trading/reset', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ confirm: true }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Reset failed')
+      setContextMessage(data.message)
+      setTrades([])
+      await fetchData()
+    } catch (err) {
+      console.error(err)
+      setContextMessage('Failed to reset debate context. Try again.')
+    } finally {
+      setResetting(false)
+    }
   }
 
   const winRate  = simulation?.total_trades ? Math.round((simulation.win_count / simulation.total_trades) * 100) : 0
@@ -375,7 +414,7 @@ export default function TradingPage() {
               <p className="text-xs text-gray-500">6-agent AI debate · Paper trading</p>
             </div>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 flex-wrap justify-end">
             <div className="flex items-center gap-2">
               <span className="text-xs text-gray-500">Trading</span>
               <button onClick={toggleTrading} className={`relative w-10 h-5 rounded-full transition-colors ${enabled ? 'bg-indigo-600' : 'bg-gray-700'}`}>
@@ -383,6 +422,22 @@ export default function TradingPage() {
               </button>
               <span className={`text-xs font-medium ${enabled ? 'text-indigo-400' : 'text-gray-500'}`}>{enabled ? 'ON' : 'OFF'}</span>
             </div>
+            <label className="flex items-center gap-1.5 cursor-pointer" title="Wipe simulation tables and re-seed from portfolio when turning trading ON">
+              <input
+                type="checkbox"
+                checked={resetOnEnable}
+                onChange={(e) => setResetOnEnable(e.target.checked)}
+                className="rounded border-gray-600 bg-gray-800 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-gray-900"
+              />
+              <span className="text-xs text-gray-400">Fresh context on enable</span>
+            </label>
+            <button
+              onClick={() => setShowResetConfirm(true)}
+              disabled={resetting}
+              className="px-3 py-1.5 border border-amber-700/60 text-amber-300 hover:bg-amber-950/50 disabled:opacity-50 text-xs rounded-lg transition-colors"
+            >
+              {resetting ? 'Resetting…' : '↺ Reset Context'}
+            </button>
             <button onClick={runAnalysis} disabled={running || !enabled}
               className="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:bg-gray-700 disabled:text-gray-500 text-white text-sm rounded-lg font-medium transition-colors flex items-center gap-2">
               {running ? <><div className="w-3 h-3 border border-white border-t-transparent rounded-full animate-spin" />Analyzing...</> : '▶ Run Analysis'}
@@ -408,6 +463,13 @@ export default function TradingPage() {
             </div>
           ))}
         </div>
+
+        {contextMessage && (
+          <div className="mb-4 p-3 bg-amber-950/40 border border-amber-800/60 rounded-lg text-sm text-amber-200 flex items-start justify-between gap-3">
+            <span>🔄 {contextMessage}</span>
+            <button onClick={() => setContextMessage(null)} className="text-amber-500 hover:text-amber-300 text-xs shrink-0">✕</button>
+          </div>
+        )}
 
         {lastRun && (
           <div className="mb-4 p-3 bg-indigo-950 border border-indigo-800 rounded-lg text-sm text-indigo-300">
@@ -496,11 +558,43 @@ export default function TradingPage() {
                 <p>③ Weighted vote determines action</p>
                 <p>④ Alex synthesizes final decision</p>
                 <p>⑤ Trade stored with full rationale</p>
+                <p className="text-amber-500/80 pt-1">↺ Reset Context clears simulation tables for clean test runs</p>
               </div>
             </div>
           </div>
         </div>
       </div>
+
+      {showResetConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70">
+          <div className="bg-gray-900 border border-gray-700 rounded-xl max-w-md w-full p-5 shadow-xl">
+            <h3 className="text-lg font-semibold text-white mb-2">Reset debate context?</h3>
+            <p className="text-sm text-gray-400 mb-3">
+              Clears your simulation history and re-seeds a fresh paper-trading account from your current portfolio.
+            </p>
+            <ul className="text-xs text-gray-500 space-y-1 mb-4 list-disc list-inside">
+              <li>simulated_trades, agent_positions, trading_simulations</li>
+              <li>trading_floor_intelligence, rl_weights, scout_candidates</li>
+              <li>trading_events, trading_daily_pnl</li>
+            </ul>
+            <p className="text-xs text-amber-400/90 mb-4">Portfolio research digests are kept. Use this before test runs for a clean slate.</p>
+            <div className="flex gap-2 justify-end">
+              <button
+                onClick={() => setShowResetConfirm(false)}
+                className="px-4 py-2 text-sm text-gray-400 hover:text-white rounded-lg"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={resetDebateContext}
+                className="px-4 py-2 text-sm bg-amber-700 hover:bg-amber-600 text-white rounded-lg font-medium"
+              >
+                Reset &amp; re-seed
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

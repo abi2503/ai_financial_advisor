@@ -177,6 +177,165 @@ def test_routing_steps():
         fail("routing_steps", str(steps))
 
 
+def test_follow_up_context():
+    print("\n── P1 follow-up context ──")
+    nvda_ctx = (
+        "ALEX: **Nvidia (NVDA)** is poised for potential growth with a strong analyst consensus.\n"
+        "USER: analyze nvda"
+    )
+    d = classify_query("give its PE ratio", nvda_ctx)
+    if d.route == "fast" and d.entities and d.entities[0] == "NVDA":
+        ok('"give its PE ratio" → fast NVDA from context')
+    else:
+        fail("give its PE ratio", f"route={d.route} entities={d.entities}")
+
+    mu_ctx = (
+        "ALEX: **Micron Technology (MU)** — Deep Research | June 15, 2026\n"
+        "Options flow data indicates bullish sentiment among investors.\n"
+        "USER: SEC filing details about micron"
+    )
+    d2 = classify_query("what is its market sentiment?", mu_ctx)
+    if d2.route == "fast" and d2.entities and d2.entities[0] == "MU":
+        ok('"what is its market sentiment?" → fast MU after Micron research')
+    else:
+        fail("market sentiment follow-up", f"route={d2.route} entities={d2.entities}")
+
+    # PE must not be mistaken for a ticker
+    d2 = classify_query("give its PE ratio", "")
+    if d2.route == "chat":
+        ok('"give its PE ratio" without context → chat (not PE ticker)')
+    else:
+        fail("PE without context", f"route={d2.route} entities={d2.entities}")
+
+    amd_ctx = (
+        "ALEX: **AMD — Insider Trading (Form 4) | June 13, 2026**\n"
+        "Accession Number: 0000002488-26-000109\n"
+        "Transaction details sourced from SEC EDGAR.\n"
+        "USER: insider trade details for AMD"
+    )
+    d3 = classify_query("are there any other details I can know?", amd_ctx)
+    if d3.route == "deep" and d3.deep_kind == "mcp" and d3.entities and d3.entities[0] == "AMD":
+        ok('"any other details?" after AMD Form 4 → deep MCP with AMD')
+    else:
+        fail("AMD insider vague follow-up", f"route={d3.route} kind={d3.deep_kind} entities={d3.entities}")
+    if d3.research_scope == "filing_form4":
+        ok("AMD insider follow-up → filing_form4 scope")
+    else:
+        fail("AMD insider scope", f"got {d3.research_scope}")
+
+    from query_router import enrich_follow_up_query
+    enriched, scope = enrich_follow_up_query("are there any other details I can know?", amd_ctx)
+    if enriched and "AMD" in enriched and scope and scope.scope == "filing_form4":
+        ok("enrich_follow_up_query expands vague insider follow-up")
+    else:
+        fail("enrich_follow_up_query", f"topic={enriched} scope={getattr(scope, 'scope', scope)}")
+
+
+def test_micron_sec_entities():
+    print("\n── P1 company name → ticker ──")
+    d = classify_query("SEC filing details about micron")
+    if d.route == "deep" and "MU" in d.entities:
+        ok("micron SEC → deep with MU entity")
+    else:
+        fail("micron SEC", f"route={d.route} entities={d.entities}")
+    if d.research_scope == "sec_full":
+        ok("broad SEC query → sec_full scope")
+    else:
+        fail("micron SEC scope", f"got {d.research_scope}")
+
+
+def test_research_scope():
+    print("\n── P1 scoped deep research ──")
+    from query_router import infer_research_scope
+
+    cases = [
+        ("tell me about 10k filings for NVDA", "filing_10k", ["10-K"], False, False),
+        ("show me the 8-K for TSLA", "filing_8k", ["8-K"], False, False),
+        ("SEC filing details about micron", "sec_full", ["10-K", "4"], True, True),
+        ("NVDA analyst ratings from MarketBeat", "analyst_only", [], True, False),
+    ]
+    for q, scope, forms, analyst, options in cases:
+        s = infer_research_scope(q)
+        ok_scope = s.scope == scope and s.sec_forms == forms
+        ok_flags = s.use_analyst_browser == analyst and s.use_options_browser == options
+        if ok_scope and ok_flags:
+            ok(f'"{q[:35]}..." → {scope}')
+        else:
+            fail(q, f"scope={s.scope} forms={s.sec_forms} analyst={s.use_analyst_browser}")
+
+
+def test_sec_conceptual_education():
+    print("\n── P1 SEC conceptual education (not deep) ──")
+    edu_cases = [
+        "diffirence b/w 10k, 8k and 4k filing of a stock?",
+        "what is the difference between 10-K and 8-K?",
+        "explain Form 4 insider filings",
+        "what is a 10-K filing?",
+        "compare 10-Q vs 10-K",
+        "when do companies file an 8-K?",
+        "purpose of SEC Form 4",
+    ]
+    for q in edu_cases:
+        d = classify_query(q)
+        if d.route == "chat" and d.intent == "sec_education":
+            ok(f'edu: "{q[:40]}..."')
+        else:
+            fail(q, f"route={d.route} intent={d.intent}")
+
+    # Live SEC data requests must still go deep
+    live_cases = [
+        ("SEC filing details about micron", "deep"),
+        ("tell me about 10k filings for NVDA", "deep"),
+        ("show NVDA 8-K from EDGAR", "deep"),
+    ]
+    for q, expected in live_cases:
+        d = classify_query(q)
+        if d.route == expected:
+            ok(f'live: "{q[:35]}..." → {d.route}')
+        else:
+            fail(q, f"expected {expected}, got {d.route} intent={d.intent}")
+
+
+def test_trading_education():
+    print("\n── P1 trading education (stop loss, etc.) ──")
+    cases = [
+        "explain stop loss?",
+        "what is a stop loss",
+        "explain take profit orders",
+        "what is dollar cost averaging",
+    ]
+    for q in cases:
+        d = classify_query(q)
+        if d.route == "chat" and d.intent in ("education", "conversation", "sec_education"):
+            ok(f'"{q}" → chat {d.intent}')
+        elif d.route == "chat" and d.intent == "off_topic":
+            fail(q, "should not be off_topic")
+        else:
+            fail(q, f"route={d.route} intent={d.intent}")
+
+
+def test_llm_finance_gate_unknown_concepts():
+    """Obscure finance terms hit LLM gate — no new regex per concept."""
+    print("\n── P1 LLM finance gate (unknown concepts) ──")
+    from unittest.mock import patch
+    import query_router as qr
+
+    with patch.object(qr, "_llm_finance_gate", return_value=(True, "education")):
+        for q in ("explain vega", "what is gamma in options", "define theta decay"):
+            d = classify_query(q)
+            if d.route == "chat" and d.intent == "education":
+                ok(f'LLM gate: "{q}" → education')
+            else:
+                fail(q, f"route={d.route} intent={d.intent}")
+
+    with patch.object(qr, "_llm_finance_gate", return_value=(False, "off_topic")):
+        d = classify_query("explain photosynthesis")
+        if d.intent == "off_topic":
+            ok("LLM gate rejects non-finance")
+        else:
+            fail("photosynthesis", f"intent={d.intent}")
+
+
 def main():
     print("🧪 P1 Query Router Tests")
     print("=" * 50)
@@ -188,6 +347,12 @@ def main():
     test_policy_flag()
     test_off_topic()
     test_chat_with_stale_context()
+    test_follow_up_context()
+    test_micron_sec_entities()
+    test_research_scope()
+    test_sec_conceptual_education()
+    test_trading_education()
+    test_llm_finance_gate_unknown_concepts()
     test_routing_steps()
     print("\n" + "=" * 50)
     print(f"📊 {PASSED} passed, {FAILED} failed")

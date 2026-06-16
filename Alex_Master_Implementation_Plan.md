@@ -6,6 +6,8 @@
 > - `Alex_Trading_Floor_2.0.md` — Autonomous paper-trading simulation, scout agents, RL learning
 > - `Alex_AI_2.0.md` — Intelligent conversational AI, query routing, session RAG, MCP, synthesis
 > - `Startup.md` — Business model, monetization, startup ideas, unit economics
+>
+> **Infrastructure rule (mandatory):** All AWS resource provisioning and configuration changes go through **Terraform** (`terraform/0_vpc` … `terraform/9_trading_floor`). No ad-hoc `aws lambda create-function`, EventBridge schedules, IAM policies, or new queues via CLI/Console. Application code deploys (`deploy.sh`, `deploy_trading.sh`) update artifacts on Terraform-managed resources only.
 
 ---
 
@@ -21,17 +23,20 @@
 8. [Trading Floor Intelligence Vector Store (P14)](#trading-floor-intelligence-vector-store-p14)
 9. [Async Deep Research Sub-Agents (P15)](#async-deep-research-sub-agents-p15)
 10. [RAGAS Evaluation Framework (P17)](#ragas-evaluation-framework-p17)
-11. [Aurora Schema Master List](#aurora-schema-master-list)
-12. [API Master List](#api-master-list)
-13. [Frontend Master List](#frontend-master-list)
-14. [Infrastructure Master List](#infrastructure-master-list)
-15. [Observability Master Map](#observability-master-map)
-16. [Effort Estimates](#effort-estimates)
-17. [Recommended Implementation Order](#recommended-implementation-order)
-18. [Decision Checklist for Approval](#decision-checklist-for-approval)
-19. [Production Engineering Pillars](#production-engineering-pillars-implementable-from-current-setup)
-20. [Test After Every Phase](#test-after-every-phase)
-21. [Document Index](#document-index)
+11. [Alex Comprehensive Cost Agent (P21)](#alex-comprehensive-cost-agent-p21)
+12. [Aurora Schema Master List](#aurora-schema-master-list)
+13. [API Master List](#api-master-list)
+14. [Frontend Master List](#frontend-master-list)
+15. [Infrastructure Master List](#infrastructure-master-list) — **Terraform-first policy**
+16. [Observability Master Map](#observability-master-map)
+17. [Effort Estimates](#effort-estimates)
+18. [Recommended Implementation Order](#recommended-implementation-order)
+19. [Decision Checklist for Approval](#decision-checklist-for-approval)
+20. [Production Engineering Pillars](#production-engineering-pillars-implementable-from-current-setup)
+21. [Test After Every Phase](#test-after-every-phase)
+22. [LangChain Family — LangChain, LangGraph, LangSmith](#langchain-family--langchain-langgraph-langsmith)
+23. [Agentic RAG](#agentic-rag)
+24. [Document Index](#document-index)
 
 ---
 
@@ -70,6 +75,7 @@ Alex becomes a **complete financial intelligence platform** with three interconn
 │  query response speed (P50/P95, first token, sub-agent breakdown),   │
 │  RAGAS quality scores (relevancy, faithfulness, hallucination),        │
 │  trading floor intelligence retrieval, simulation P&L                  │
+│  + daily FinOps email synthesized by Alex Cost Agent (P21)            │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -201,6 +207,7 @@ flowchart LR
 - 6-agent trading debate (manual trigger)
 - Portfolio CRUD + portfolio research digests (2h)
 - Cost/guardrail observability (7-day)
+- `alex-cost-monitor` + `alex-ops-agent` — **fragmented** cost reporting (AWS only vs ops digest; email only on alert or Monday)
 - Ingest pipeline → pgvector
 - RAGAS eval script (`scripts/tests/test_ragas.py`) — local run, JSON report only
 - `ragas_evaluations` table DDL in `aurora_warmup.py`
@@ -216,6 +223,7 @@ flowchart LR
 - Multi-agent reporter — Bedrock only, no live tools
 - Guardrails — not on all paths
 - Observer Lambda — not deployed
+- **Comprehensive Cost Agent (P21)** — not built; no unified daily cost email across all agents/sessions
 - EventBridge trading schedule — permission only, no schedule
 - RAGAS — not persisted to Aurora, not in CI, no `/observe` panel, no deploy gate
 
@@ -279,6 +287,10 @@ flowchart LR
 | **P14** | Trading Floor Intelligence Vector Store | Trading | 3–4 days | P4, P6 |
 | **P15** | Async Deep Research Sub-Agents + Latency Observability | AI | 4–5 days | P1, P3, P7 |
 | **P17** | RAGAS Evaluation Framework | AI / Both | 2–3 days | P2, P3 |
+| **P21** | Alex Comprehensive Cost Agent (FinOps) | Both | 3–4 days | P11, P15 |
+| **P22** | LangSmith Tracing + Eval (LangChain Family) | AI / Both | 2–3 days | P1, P11 |
+| **P23** | LangGraph Orchestration (selective) | AI | 3–5 days | P2, P22 |
+| **P24** | Agentic RAG Engine | AI | 4–6 days | P2, P23 (optional) |
 
 ---
 
@@ -471,6 +483,335 @@ flowchart LR
 - AI session summary (optional weekly email)
 
 **User sees:** Daily email: "Your simulation +1.2% today. Marcus was most accurate."
+
+---
+
+## Alex Comprehensive Cost Agent (P21)
+
+**Goal:** One **Alex FinOps agent** that aggregates every cost signal across the platform — AWS infra, Bedrock tokens per agent, per-session API costs, MCP/tool calls, trading debate spend, embeddings, external APIs — synthesizes a human-readable report via Alex (Nova Lite), and emails it **daily** to `abhishek.suresh2503@gmail.com` via EventBridge + SES.
+
+### Problem Today (Fragmented FinOps)
+
+| Component | What it tracks | Email behavior | Gap |
+|-----------|----------------|----------------|-----|
+| `alex-cost-monitor` (`cost_monitor.py`) | AWS Cost Explorer only | Alert if daily > $10; Monday weekly digest | No agent/session/API breakdown |
+| `alex-ops-agent` (`ops_agent.py`) | Health + AWS + LLM metrics + API cost estimates | Alert on issues; Monday weekly ops digest | Not daily; no per-user/per-session attribution |
+| `agent_observations` | Per-call tokens, cost, agent name | None (dashboard only) | Not rolled into email |
+| `query_latency_metrics` | Per-query cost, route, tools | None | Not in daily report |
+| Dashboard `OpsCostWidget` | 7-day `cost_snapshots` | None | AWS infra only |
+
+**User requirement:** Single daily email with **full system cost picture** — infra + intelligence + per-agent + per-session — synthesized by Alex.
+
+### Architecture
+
+```mermaid
+flowchart TB
+    EB[EventBridge Scheduler\ncron 0 7 * * ? * ET]
+    CA[alex-cost-agent Lambda]
+    SYN[Alex Synthesizer\nNova Lite digest]
+
+    subgraph collectors [Cost Collectors]
+        CE[AWS Cost Explorer\ninfra by service]
+        OPS[ops_snapshots\nhealth + API traffic]
+        AO[agent_observations\nper-agent tokens + cost]
+        QLM[query_latency_metrics\nper-session / per-route]
+        AO_TR[Trading agent_observations\ndebate cost]
+        CW[CloudWatch AlexAI/*\nBedrock + SageMaker]
+        EXT[External API estimator\nSEC, yfinance, Playwright]
+    end
+
+    subgraph persist [Aurora]
+        CDR[(cost_daily_reports)]
+        CS[(cost_snapshots)]
+    end
+
+    SES[Amazon SES\nabhishek.suresh2503@gmail.com]
+
+    EB --> CA
+    CA --> collectors
+    collectors --> CA
+    CA --> SYN
+    SYN --> CDR
+    CA --> CS
+    CA --> SES
+```
+
+### Cost Data Sources (Complete Inventory)
+
+#### Layer 1 — AWS Infrastructure (Cost Explorer)
+
+| Source | Collector | Granularity |
+|--------|-----------|-------------|
+| ECS Fargate | `ce.get_cost_and_usage` GROUP BY SERVICE | Daily + MTD |
+| Lambda (all agents) | Cost Explorer + invocation counts | Per function |
+| Aurora Serverless | Cost Explorer | Daily |
+| SageMaker endpoint | Cost Explorer + `InvocationsPerInstance` | Daily |
+| ALB, NAT, VPC | Cost Explorer | Daily |
+| SQS, SES, S3, CloudWatch | Cost Explorer | Daily |
+| API Gateway | Cost Explorer | Daily |
+
+**Reuses:** `get_daily_cost()`, `get_mtd_cost()`, `get_weekly_costs()` from `ops_agent.py` / `cost_monitor.py`.
+
+#### Layer 2 — LLM / Bedrock (Per Agent)
+
+| Agent / Path | Source table / metric | Fields |
+|--------------|----------------------|--------|
+| Alex chat (fast/deep/multi) | `query_latency_metrics` | `cost_usd`, `route`, `model`, `user_id`, `session_id` |
+| Research reporter | `agent_observations` WHERE `agent_name='reporter'` | `tokens_in`, `tokens_out`, `cost_usd` |
+| Planner / Tagger | `agent_observations` + Lambda invocations | tokens, cost |
+| Trading debate (6 agents) | `agent_observations` WHERE `domain='trading'` | per-agent BUY/SELL votes + cost |
+| Ops / Cost / Observer digests | Lambda Bedrock calls | Nova Lite token estimate |
+| Guardrails | `agent_observations.guardrail_hits` | Bedrock guardrail API cost |
+| Embeddings (ingest + RAG) | SageMaker `alex-embedding` invocations | calls × $0.0001/1K |
+
+**Aggregation SQL (daily rollup):**
+
+```sql
+-- Per-agent LLM cost (last 24h)
+SELECT agent_name,
+       COUNT(*) AS calls,
+       SUM(tokens_in) AS tokens_in,
+       SUM(tokens_out) AS tokens_out,
+       SUM(cost_usd) AS cost_usd
+FROM agent_observations
+WHERE created_at >= NOW() - INTERVAL '24 hours'
+GROUP BY agent_name;
+
+-- Per-route session cost (last 24h)
+SELECT route,
+       COUNT(*) AS queries,
+       SUM(cost_usd) AS cost_usd,
+       AVG(total_ms) AS avg_latency_ms,
+       COUNT(DISTINCT user_id) AS active_users,
+       COUNT(DISTINCT session_id) AS sessions
+FROM query_latency_metrics
+WHERE created_at >= NOW() - INTERVAL '24 hours'
+GROUP BY route;
+```
+
+#### Layer 3 — External APIs & MCP Tools
+
+| API / Tool | Estimator | Source |
+|------------|-----------|--------|
+| Yahoo Finance (`yfinance`) | $0 (free) | `query_latency_metrics.data_sources` |
+| SEC EDGAR | $0 (free) | tool call logs |
+| Playwright MCP | compute-only (ECS) | CloudWatch ECS logs |
+| Polygon / Alpha Vantage / Finnhub | tiered $/call | `EXTERNAL_API_COSTS` map in `ops_agent.py` |
+| Unusual Whales / Benzinga | tiered $/call | future P13 MCP registry |
+
+**Reuses:** `get_external_api_costs()` from `ops_agent.py` — extend to read `query_latency_metrics.data_sources` JSON for pass/fail + call counts.
+
+#### Layer 4 — Trading Floor Specific
+
+| Item | Source | Cost driver |
+|------|--------|-------------|
+| Debate cycles | `trading_events` + orchestrator invocations | 6× Nova Lite/Pro per debate |
+| Scout scans | `scout_candidates` (P9) | MCP + LLM |
+| Trade evaluator | `alex-trade-evaluator` (P8) | Lambda + Bedrock |
+| Paper trades | `simulated_trades` | $0 execution (simulation) |
+
+#### Layer 5 — Per-User / Per-Session Attribution (Optional P21.1)
+
+| Dimension | Use |
+|-----------|-----|
+| `user_id` | Top 5 costliest users (for unit economics) |
+| `session_id` | Most expensive sessions (debug runaway chats) |
+| Clerk tier (future) | Margin per subscription tier |
+
+### Alex Synthesis (Report Generation)
+
+**Model:** `us.amazon.nova-lite-v1:0` (cost-efficient; ~$0.0003/report)
+
+**Prompt structure:**
+
+```
+You are Alex FinOps — synthesize yesterday's platform cost report.
+
+SECTIONS REQUIRED:
+1. Executive summary (3 sentences): total spend, vs yesterday, vs MTD budget
+2. AWS infrastructure breakdown (top 5 services with $)
+3. Intelligence layer: LLM spend by agent (table: agent, calls, tokens, $)
+4. Per-route chat cost: fast vs deep vs multi (queries, avg cost/query, P95 latency)
+5. External API & MCP: calls and estimated $ by source
+6. Trading floor: debate runs, tokens, cost per debate cycle
+7. Cost per active user / session (if data available)
+8. Anomalies: anything >2× 7-day average
+9. 3 actionable optimization recommendations (specific, not generic)
+10. Status: ON TRACK | MONITOR | ALERT (based on $10/day threshold)
+
+Be specific with numbers. Audience: platform owner (developer).
+```
+
+**Output formats:**
+- **Email body:** Markdown-style plain text (SES `Text` part)
+- **Stored JSON:** Full structured payload in `cost_daily_reports.report_json`
+- **Dashboard:** `/observe` panel + `/api/costs` extended with latest report
+
+### New Lambda: `alex-cost-agent`
+
+**File:** `backend/agents/cost_agent.py` (evolve + supersede `cost_monitor.py`)
+
+```python
+def lambda_handler(event, context):
+    window = collect_cost_window(hours=24)      # all layers above
+    report = synthesize_report(window)           # Nova Lite
+    store_daily_report(report)                   # cost_daily_reports
+    upsert_cost_snapshots(window.aws)            # backward compat
+    send_daily_email(
+        to="abhishek.suresh2503@gmail.com",
+        subject=f"Alex Daily Cost Report — {date} — ${report.grand_total:.2f}",
+        body=report.email_body,
+    )
+    if report.grand_total >= DAILY_THRESHOLD:
+        store_cost_alert(report)
+    return {"status": "ok", "total": report.grand_total}
+```
+
+**Consolidation plan:**
+
+| Existing | After P21 |
+|----------|-----------|
+| `cost_monitor.py` daily schedule | **Replaced** by `cost_agent.py` (same EventBridge slot) |
+| `ops_agent.py` weekly cost email | **Removed** — ops emails issues/alerts only |
+| `ops_agent.py` `store_cost_snapshot()` | **Kept** — 30-min dashboard refresh unchanged |
+
+### Aurora Schema: `cost_daily_reports`
+
+```sql
+CREATE TABLE IF NOT EXISTS cost_daily_reports (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  report_date DATE NOT NULL UNIQUE,
+  grand_total NUMERIC(12,6) NOT NULL,
+  aws_infra_total NUMERIC(12,6) DEFAULT 0,
+  llm_total NUMERIC(12,6) DEFAULT 0,
+  external_api_total NUMERIC(12,6) DEFAULT 0,
+  trading_total NUMERIC(12,6) DEFAULT 0,
+  report_json JSONB NOT NULL,          -- full structured collectors output
+  synthesis TEXT NOT NULL,             -- Alex-generated narrative
+  email_sent BOOLEAN DEFAULT false,
+  email_sent_at TIMESTAMPTZ,
+  recipient VARCHAR(255) DEFAULT 'abhishek.suresh2503@gmail.com',
+  status VARCHAR(20) DEFAULT 'ok',       -- ok | alert | error
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS cdr_date_idx ON cost_daily_reports (report_date DESC);
+```
+
+Add to `aurora_warmup.py` in P21.
+
+### EventBridge + SES Configuration
+
+| Resource | Value |
+|----------|-------|
+| Schedule | `cron(0 7 * * ? *)` — **7:00 AM ET daily** |
+| Lambda | `alex-cost-agent` (replaces `alex-cost-monitor` target) |
+| SES verified identity | `abhishek.suresh2503@gmail.com` (sender + recipient — existing) |
+| Env `ALERT_EMAIL` | `abhishek.suresh2503@gmail.com` |
+| Env `DAILY_COST_THRESHOLD` | `10.0` (alert section in email if exceeded) |
+| Terraform | `terraform/6_agents/main.tf` — update schedule target + rename function |
+
+**Email sections (daily):**
+
+```
+Subject: Alex Daily Cost Report — 2026-06-13 — $4.82
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ALEX FINOPS — Daily Platform Cost
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+[Alex synthesis — executive summary]
+
+── AWS Infrastructure ($X.XX) ──
+  ECS Fargate:     $X.XX
+  Aurora:          $X.XX
+  Lambda:          $X.XX
+  ...
+
+── Intelligence Layer ($X.XX) ──
+  Agent          Calls   Tokens    Cost
+  reporter       12      45,200    $0.18
+  debate-marcus  6       8,400     $0.02
+  ...
+
+── Chat Routes (24h) ──
+  fast:  23 queries, $0.04 total, $0.002/query
+  deep:   8 queries, $0.31 total, $0.039/query
+  ...
+
+── External APIs ($X.XX) ──
+  yfinance: 142 calls ($0)
+  sec_edgar: 18 calls ($0)
+  ...
+
+── Trading Floor ──
+  Debates: 3 cycles, $0.12 total
+
+── MTD: $XX.XX | 7-day avg: $X.XX/day ──
+Status: ON TRACK
+
+View live: {FRONTEND_URL}/observe
+```
+
+### Deliverables (P21)
+
+| # | Deliverable | File(s) |
+|---|-------------|---------|
+| 1 | Cost collector module (all layers) | `backend/agents/cost_agent.py`, `backend/agents/cost_collectors.py` |
+| 2 | Alex synthesis prompt + fallback template | `cost_agent.py` |
+| 3 | `cost_daily_reports` DDL | `scripts/aurora_warmup.py` |
+| 4 | EventBridge daily schedule → cost-agent | `terraform/6_agents/main.tf` |
+| 5 | Deprecate `cost_monitor.py` schedule (merge logic) | `cost_monitor.py` → thin wrapper or remove |
+| 6 | Ops agent: remove weekly cost email; keep 30-min health | `ops_agent.py` |
+| 7 | API: latest daily report | `frontend/app/api/costs/route.ts` — add `?report=daily` |
+| 8 | `/observe` panel: **Daily Cost Report** | `frontend/app/observe/page.tsx` |
+| 9 | Static tests | `scripts/tests/test_p21_cost_agent.py` |
+| 10 | SES + EventBridge verification script | `scripts/test_cost_agent.sh` |
+
+### Dependencies
+
+| Depends on | Why |
+|------------|-----|
+| **P11** | `agent_observations` panels populated; observability baseline |
+| **P15** | `query_latency_metrics.cost_usd` per session (accurate chat attribution) |
+| P0 schema | `agent_observations`, `cost_snapshots` DDL |
+
+Can ship **P21-lite** before P15 using CloudWatch estimates for chat cost; full accuracy after P15.
+
+### Effort & Priority
+
+| Item | Estimate |
+|------|----------|
+| Collectors + SQL rollups | 1.5 days |
+| Synthesis + email template | 0.5 day |
+| Terraform + deploy + SES test | 0.5 day |
+| `/observe` panel + API | 1 day |
+| Tests | 0.5 day |
+| **Total** | **3–4 days** |
+
+**Priority:** High for production FinOps — unblocks unit economics visibility and `$29/mo` margin tracking from `Startup.md`.
+
+### Verification (P21)
+
+```bash
+# 1. Infra — Terraform only (no manual Lambda/schedule creation)
+cd terraform/6_agents && terraform plan   # PR review
+cd terraform/6_agents && terraform apply  # provisions alex-cost-agent + schedule
+
+# 2. Application code
+cd backend/agents && bash package.sh       # builds cost_agent.zip
+cd terraform/6_agents && terraform apply  # if filename/env changed
+
+# 3. Static tests
+python3 scripts/tests/test_p21_cost_agent.py --static
+
+# 4. Live smoke — invoke existing TF-managed function only
+aws lambda invoke --function-name alex-cost-agent \
+  --payload '{"source":"manual-test"}' /tmp/cost_out.json
+
+# 5. Confirm email, cost_daily_reports row, /api/costs?report=daily
+```
+
+**User sees:** Every morning, one email from Alex with complete platform cost — infra, every agent, every chat session, every API — plus optimization tips.
 
 ---
 
@@ -1311,8 +1652,9 @@ Add `route` column to eval runs: `'search_api'`, `'chat_fast'`, `'chat_deep'`.
 | `quant_snapshots` | Quant | Structured indicator/chart cache |
 | `query_latency_metrics` | AI | Per-query response speed breakdown |
 | `ragas_evaluations` | AI / Eval | RAGAS run history + deploy gate status (✅ DDL exists) |
+| `cost_daily_reports` | FinOps | Alex-synthesized daily cost rollup + email payload (P21) |
 
-### All tables in `aurora_warmup.py` after implementation: **25 tables**
+### All tables in `aurora_warmup.py` after implementation: **26 tables**
 
 ---
 
@@ -1335,12 +1677,14 @@ Add `route` column to eval runs: `'search_api'`, `'chat_fast'`, `'chat_deep'`.
 | `GET /api/observe/latency` | AI | P15 (optional dedicated endpoint) |
 | `GET /api/observe/ragas` | AI / Eval | P17 |
 | `GET /api/observe/ragas/[id]` | AI / Eval | P17 |
+| `GET /api/costs?report=daily` | FinOps | P21 |
 
 ### Extended APIs
 
 | Route | Changes | Phase |
 |-------|---------|-------|
 | `GET /api/observe` | +simulation, P&L, RL, scout, events, RAG, routing, **RAGAS** | P11, P17 |
+| `GET /api/costs` | +latest `cost_daily_reports` synthesis + JSON breakdown | P21 |
 | `GET /api/trading` | +simulation summary, RL weights | P4, P8 |
 | `GET /api/portfolio-research` | (existing, no changes) | — |
 
@@ -1364,33 +1708,87 @@ Add `route` column to eval runs: `'search_api'`, `'chat_fast'`, `'chat_deep'`.
 | `ChatContext.tsx` | Aurora session sync | P2 |
 | `/trading` | Simulation tab, replay, agent settings, scout panel, RL badges, intelligence browser | P4, P5, P8, P9, P14 |
 | `/research` | Quant chart embeds + deep sub-agent progress checklist | P13, P15 |
-| `/observe` | 10+ new panels + **RAGAS quality scorecard** (see observability map) | P11, P17 |
+| `/observe` | 10+ new panels + **RAGAS scorecard** + **Daily Cost Report** (P21) | P11, P17, P21 |
 | `/portfolio` | Agent recommendation badge per holding, link to trading | P6 |
-| `/dashboard` | Simulation summary card, contextual Alex suggestions | P3, P4 |
+| `/dashboard` | Simulation summary card, contextual Alex suggestions, link to daily cost report | P3, P4, P21 |
 | `Navbar` | Add Trading + Observe links | P4 |
+
+---
+
+## Infrastructure Policy (Terraform-First)
+
+**Standing rule:** Infrastructure is **always** updated via Terraform. This applies to every phase (including P21 cost-agent, P5 trading schedules, P17 RAGAS Lambda, DLQs, IAM, EventBridge, SSM parameter resources, etc.).
+
+### What MUST go through Terraform
+
+| Category | Examples | Module(s) |
+|----------|----------|-----------|
+| **Compute definitions** | New/updated Lambda functions, timeouts, memory, env vars, permissions | `6_agents`, `9_trading_floor`, `3_ingestion` |
+| **Scheduling** | EventBridge Scheduler rules, cron expressions, targets | `6_agents`, `9_trading_floor` |
+| **Messaging** | SQS queues, DLQs, event source mappings | `6_agents`, `9_trading_floor` |
+| **Networking** | VPC, subnets, ALB, security groups | `0_vpc`, `4_researcher` |
+| **Data** | Aurora cluster, Secrets Manager | `5_database` |
+| **IAM** | Roles, policies, Lambda permissions | `1_permissions`, per-module |
+| **Observability** | CloudWatch alarms, log groups, dashboards | `7_guardrails`, per-module |
+| **Config** | SSM parameters (as resources), API Gateway | `9_trading_floor`, `3_ingestion` |
+| **ML** | SageMaker endpoints | `2_sagemaker` |
+
+### What deploy scripts do (code only — not infra)
+
+| Script | Allowed action | Not allowed |
+|--------|----------------|-------------|
+| `backend/researcher/deploy.sh` | Docker build → ECR push → ECS rolling deploy | Create ECS cluster/service from scratch |
+| `scripts/deploy_trading.sh` | Zip → S3 → `update-function-code` on existing Lambdas | `create-function`, new IAM roles |
+| `scripts/deploy_ingest.sh` | Package + update ingest Lambda code | New API Gateway routes without TF |
+| `backend/agents/package.sh` | Build `.zip` artifacts for Terraform `filename` | Register Lambdas outside TF |
+
+### Standard infra change workflow
+
+```
+1. Edit Terraform in terraform/{module}/main.tf (+ variables.tf if needed)
+2. terraform plan  (PR) / terraform apply  (deploy)
+3. Package application code (package.sh / deploy_*.sh) if Lambda/ECS code changed
+4. terraform apply again if zip paths or env vars reference new artifacts
+5. scripts/health_check.sh + phase tests
+6. Document in Alex_report.md §33 — include terraform module path
+```
+
+### Anti-patterns (do not do)
+
+- `aws lambda create-function` for new agents → add `aws_lambda_function` in TF
+- `aws scheduler create-schedule` in shell → add `aws_scheduler_schedule` in TF
+- Manual Console changes to IAM, EventBridge, or SQS → export to TF or revert
+- `start_session.sh` creating permanent resources → session script may **enable/disable** TF-managed schedules and **deploy code** only
+
+**P21 example:** `alex-cost-agent` Lambda, EventBridge `alex-cost-agent-daily`, SES env vars, and Lambda permissions are all defined in `terraform/6_agents/main.tf` — not created via CLI.
 
 ---
 
 ## Infrastructure Master List
 
-| Resource | Action | Phase |
-|----------|--------|-------|
-| `alex-trading-orchestrator` Lambda | Update: context_builder, trade_executor | P4, P6 |
-| `alex-debate-agent` Lambda | Update: dynamic RL weights, richer context | P6, P8 |
-| `alex-trade-evaluator` Lambda | **New** — daily outcome scoring | P8 |
-| `alex-trading-observer` Lambda | **New** — daily digest | P12 |
-| `alex-sentinel` Lambda | **New** — hourly stop-loss check | P9 |
-| ECS researcher service | Update: router, synthesizer, RAG, MCP, quant MCP, deep orchestrator | P1–P3, P7, P13, P15 |
-| `alex-ingest` Lambda | Update: user-scoped vectors | P3 |
-| `alex-debate-ingest` (in debate Lambda) | **New** — trading_floor_intelligence writer | P14 |
-| EventBridge: `alex-trading-auto` | **Add** — debate schedule | P5 |
-| EventBridge: `alex-trade-evaluator` | **Add** — daily 5PM ET | P8 |
-| EventBridge: `alex-trading-observer` | **Add** — daily 4:30PM ET | P12 |
-| EventBridge: `alex-sentinel` | **Add** — hourly | P9 |
-| EventBridge: `alex-ragas-weekly` | **Add** — Sunday 6 AM ET (optional) | P17 |
-| `alex-ragas-eval` Lambda | **New** — scheduled RAGAS runner (optional) | P17 |
-| SQS DLQ for trading queue | **Add** | P4 |
-| Reporter timeout 900s | ✅ Already done (portfolio research) | — |
+> **All rows below:** implement resource definitions in Terraform first; use deploy scripts only for application code updates.
+
+| Resource | Action | Phase | Terraform module |
+|----------|--------|-------|------------------|
+| `alex-trading-orchestrator` Lambda | Update: context_builder, trade_executor | P4, P6 | `9_trading_floor` |
+| `alex-debate-agent` Lambda | Update: dynamic RL weights, richer context | P6, P8 | `9_trading_floor` |
+| `alex-trade-evaluator` Lambda | **New** — daily outcome scoring | P8 | `9_trading_floor` |
+| `alex-trading-observer` Lambda | **New** — daily digest | P12 | `9_trading_floor` |
+| `alex-sentinel` Lambda | **New** — hourly stop-loss check | P9 | `9_trading_floor` |
+| ECS researcher service | Update: router, synthesizer, RAG, MCP, quant MCP, deep orchestrator | P1–P3, P7, P13, P15 | `4_researcher` |
+| `alex-ingest` Lambda | Update: user-scoped vectors | P3 | `3_ingestion` |
+| `alex-debate-ingest` (in debate Lambda) | **New** — trading_floor_intelligence writer | P14 | `9_trading_floor` |
+| EventBridge: `alex-trading-auto` | **Add** — debate schedule | P5 | `9_trading_floor` |
+| EventBridge: `alex-trade-evaluator` | **Add** — daily 5PM ET | P8 | `9_trading_floor` |
+| EventBridge: `alex-trading-observer` | **Add** — daily 4:30PM ET | P12 | `9_trading_floor` |
+| EventBridge: `alex-sentinel` | **Add** — hourly | P9 | `9_trading_floor` |
+| EventBridge: `alex-ragas-weekly` | **Add** — Sunday 6 AM ET (optional) | P17 | `6_agents` |
+| `alex-ragas-eval` Lambda | **New** — scheduled RAGAS runner (optional) | P17 | `6_agents` |
+| `alex-cost-agent` Lambda | **New** — replaces `alex-cost-monitor`; daily FinOps report + email | P21 | `6_agents` |
+| EventBridge: `alex-cost-agent-daily` | **Update** — 7 AM ET → `alex-cost-agent` | P21 | `6_agents` |
+| `alex-cost-monitor` Lambda | **Deprecate** — logic merged into `alex-cost-agent` | P21 | `6_agents` |
+| SQS DLQ for trading queue | **Add** | P4 | `9_trading_floor` |
+| Reporter timeout 900s | ✅ Already done (portfolio research) | — | `6_agents` |
 
 ---
 
@@ -1431,6 +1829,10 @@ Everything reports to `/observe`. Complete panel list after all phases:
 | 29 | **RAG Quality Scorecard** | `ragas_evaluations` | P17 |
 | 30 | **RAGAS Trend (30 runs)** | `ragas_evaluations.overall_score` | P17 |
 | 31 | **Eval Gate Status (CI)** | `ragas_evaluations` WHERE `gate='ci'` | P17 |
+| 32 | **Daily Cost Report (Alex synthesis)** | `cost_daily_reports` | P21 |
+| 33 | **Cost by Route (24h)** | `query_latency_metrics` | P21 |
+| 34 | **Cost by Agent (24h)** | `agent_observations` aggregated | P21 |
+| 35 | **Per-Session Cost Leaderboard** | `query_latency_metrics` GROUP BY `session_id` | P21 |
 
 ---
 
@@ -1444,6 +1846,8 @@ Everything reports to `/observe`. Complete panel list after all phases:
 | **MVP + Async Deep** | MVP + P15 | ~4–5 weeks | 1 developer |
 | **MVP + Quant** | MVP + P13 | ~4–5 weeks | 1 developer |
 | **MVP + Debate Memory** | MVP + P14 | ~4 weeks | 1 developer |
+| **MVP + FinOps** | MVP + P21 | ~3–4 weeks | 1 developer |
+| **Full v2 + FinOps** | P0–P17 + P21 | ~12–14 weeks | 1 developer |
 
 ---
 
@@ -1474,6 +1878,7 @@ Everything reports to `/observe`. Complete panel list after all phases:
 | **P4** | `./scripts/test_trading.sh` | Orchestrator queues, debate runs, trades stored |
 | **P5–P15** | Extend `scripts/eval_suite.sh` per phase | Add one test file per phase as built |
 | **P17** | `python3 scripts/tests/test_ragas.py` | RAG quality gates |
+| **P21** | `python3 scripts/tests/test_p21_cost_agent.py` + `scripts/test_cost_agent.sh` | Collectors, synthesis fallback, SES email, `cost_daily_reports` row |
 
 ### Test file conventions
 
@@ -1510,6 +1915,7 @@ P10 Guardrails (financial-only gate at minimum)
 P2  RAG engine + session memory
 P3  Synthesizer + chunked ingest
 P4  Paper trade executor + simulation UI
+P24-lite  Agentic RAG for edu_fast only (see [Agentic RAG](#agentic-rag))
 ```
 
 **Milestone:** Alex remembers conversations. Trading simulation actually executes trades. User sees replay.
@@ -1521,9 +1927,11 @@ P5  User trading config + autonomous schedule
 P6  Context bridge (AI ↔ Trading)
 P11 Observability (core panels: simulation, RAG, routing)
 P17 RAGAS eval — Path A (search API smoke) + `/observe` scorecard
+P22 LangSmith tracing (ECS researcher + router + RAG spans)
+P21 Alex Comprehensive Cost Agent — daily email to abhishek.suresh2503@gmail.com
 ```
 
-**Milestone:** Agents debate every 2h autonomously using Alex's research. AI answers trading questions. Observe shows simulation + RAG + **RAG quality scores**.
+**Milestone:** Agents debate every 2h autonomously using Alex's research. AI answers trading questions. Observe shows simulation + RAG + **RAG quality scores**. **Daily FinOps email** with full platform cost breakdown.
 
 ### Sprint 4 (Week 4): Intelligence Upgrade
 
@@ -1531,7 +1939,9 @@ P17 RAGAS eval — Path A (search API smoke) + `/observe` scorecard
 P7  MCP expansion (SEC, News)
 P15 Async deep research sub-agents + latency observability
 P8  RL learning loop
+P24  Full agentic RAG on chat + fast paths
 P17 RAGAS Path B — eval full `/api/alex/chat` RAG path (after P2 live)
+P17 RAGAS Path C — agentic RAG education benchmark gate (after P24)
 ```
 
 **Milestone:** Deep research runs 4–5 sub-agents in parallel. Users see first results in ~6s. `/observe` shows query speed P50/P95.
@@ -1591,6 +2001,7 @@ Please confirm each item before implementation begins:
 - [ ] **12.** Scheduling: single EventBridge looping users (recommended for MVP)
 - [ ] **13.** RL approach: lightweight Aurora weights (recommended) vs ML later
 - [ ] **14.** Observer daily email: yes (recommended) vs no
+- [ ] **21.** Alex Comprehensive Cost Agent (P21): daily FinOps email to `abhishek.suresh2503@gmail.com` (recommended: yes)
 
 ### Cross-System
 
@@ -1618,6 +2029,21 @@ Please confirm each item before implementation begins:
 - [ ] **29.** Benchmark queries: 5 NVIDIA fixed set (recommended for regression) vs rotating tickers
 - [ ] **30.** Upgrade to official `ragas` pip + Bedrock judge (recommended: Phase 2) vs heuristic metrics (MVP)
 - [ ] **31.** `alex-ragas-eval` Lambda in AWS vs GitHub Actions only (recommended: GitHub first)
+
+### LangChain Family (P22–P23)
+
+- [ ] **32.** LangSmith tracing: ECS researcher first (recommended: yes) — see [LangChain Family](#langchain-family--langchain-langgraph-langsmith)
+- [ ] **33.** LangGraph scope: 4 graphs only — agentic RAG, edu_fast, committee, PDF (recommended) vs full platform rewrite (not recommended)
+- [ ] **34.** LangChain LCEL: retriever utilities inside `rag_engine.py` only (recommended) vs replace OpenAI Agents SDK (not recommended)
+- [ ] **35.** Graph checkpoints: Aurora `graph_checkpoints` table (recommended) vs SQLite local
+
+### Agentic RAG (P24)
+
+- [ ] **36.** Agentic RAG: edu_fast first, then chat + fast (recommended) — see [Agentic RAG](#agentic-rag)
+- [ ] **37.** Implementation: native Python loop first (recommended for Sprint 2), LangGraph refactor in Sprint 4
+- [ ] **38.** Max retrieval loops: 2 (recommended) vs 3
+- [ ] **39.** Low-confidence threshold → `needs_review` + LangSmith feedback (recommended: 0.7)
+- [ ] **40.** P17 Path C gate on agentic education benchmark (recommended: yes, after P24)
 
 ### Business (see Startup.md)
 
@@ -1657,7 +2083,7 @@ Please confirm each item before implementation begins:
 | **GitHub Actions** | `ci.yml`, `deploy_agents.yml`, `deploy_trading.yml`, `deploy_researcher.yml`, `health_check.yml`, `pr_check.yml` | No unified deploy pipeline | Single `deploy_all.sh` orchestrator |
 | **Path-based deploys** | Only changed paths trigger deploy | ECS researcher not always redeployed | Add `paths-filter` for all services |
 | **Smoke tests** | Trading deploy invokes orchestrator | No smoke test for researcher/ingest | Post-deploy health gate in every workflow |
-| **IaC** | 9 Terraform modules (VPC → guardrails) | Manual `start_session.sh` for env sync | Terraform outputs → GitHub env vars |
+| **IaC** | 9 Terraform modules (VPC → guardrails) | Manual `start_session.sh` for env sync | **Terraform-first for all infra**; outputs → GitHub env vars |
 | **Packaging** | `package.sh`, `deploy_trading.sh` | No version tagging | Git SHA in Lambda env `DEPLOY_VERSION` |
 | **Frontend** | Vercel (implied) | No CI build check in `ci.yml` | Add `npm run build` to PR checks |
 
@@ -1728,7 +2154,7 @@ Please confirm each item before implementation begins:
 | **Model routing** | Nova Pro (research/debate), Nova Lite (tagger/cost/ops) | Router uses Nova Lite (P1) | Tiered model selection by task |
 | **Embeddings** | SageMaker `alex-embedding` (MiniLM 384-dim) | — | Production embedding endpoint |
 | **Streaming** | SSE fast/deep streams on ECS | Unified `/api/alex/chat` SSE (P1) | Single stream contract |
-| **Token/cost tracking** | `agent_observations` — tokens, cost per call | Per-query cost in `query_latency_metrics` (P15) | Join tables for cost/query |
+| **Token/cost tracking** | `agent_observations` — tokens, cost per call | Per-query cost in `query_latency_metrics` (P15) + **P21 daily synthesis email** | Join tables for cost/query |
 | **Context budget** | Ad-hoc in prompts | RAG engine 4000-token budget (P2) | Explicit token counting |
 | **Smart guardrail skip** | `should_apply_guardrail()` — 3+ financial keywords | — | Document tradeoff |
 | **Parallel inference** | Trading agents parallel (ThreadPool) | Deep sub-agents parallel (P15) | asyncio gather pattern |
@@ -1776,7 +2202,7 @@ bash scripts/test_trading.sh
 |-----------|----------------|---------|------------|
 | **Compute** | Lambda (agents) + ECS (researcher) + SageMaker (embeddings) | Hybrid serverless + containers | Right tool per workload |
 | **Messaging** | SQS (research, results, trading, frontend-results) | Async decoupling | Add DLQ, increase visibility timeout |
-| **Scheduling** | EventBridge Scheduler (2h research, daily cost) | Cron + rate triggers | Per-user schedules (P5) |
+| **Scheduling** | EventBridge Scheduler (2h research, daily cost-agent 7AM, ops 30min) | Cron + rate triggers | Per-user schedules (P5) |
 | **Database** | Aurora Serverless v2 + pgvector | RDS Data API (no connection pool) | Scales to zero, cold start handled |
 | **Vector search** | pgvector in Aurora | Cosine similarity | IVFFlat indexes (P14) |
 | **API layer** | API Gateway (ingest/search) + ALB (ECS) + Next.js API routes | Multi-entry | Unified behind single ALB |
@@ -1818,9 +2244,439 @@ Users → CloudFront/Vercel (Next.js)
 | **P17** | RAGAS eval framework — **see main [P17](#ragas-evaluation-framework-p17)** | 2–3 days | High |
 | **P18** | SLOs + CloudWatch alarms + DLQ | 2 days | High |
 | **P19** | OpenTelemetry / X-Ray tracing | 3 days | Medium |
-| **P20** | Load testing + capacity planning | 2 days | Medium |
+| **P22** | LangSmith tracing + eval | 2–3 days | High |
+| **P23** | LangGraph orchestration (selective) | 3–5 days | Medium |
+| **P24** | Agentic RAG engine | 4–6 days | High |
 
 These phases layer on top of P0–P17 without blocking MVP delivery. **P17 (RAGAS)** is the single source of truth for eval implementation; PE P16/P18 add infra around it.
+
+---
+
+## LangChain Family — LangChain, LangGraph, LangSmith
+
+> **Feasibility:** ✅ **Yes — incremental adoption recommended.** Do **not** rewrite the full platform. Alex already runs **OpenAI Agents SDK** + **LiteLLM** + **direct Bedrock** on ECS/Lambda. LangChain family tools slot in as **RAG primitives**, **graph orchestration**, and **observability/eval** — not as a replacement for every agent path.
+
+### Current State vs LangChain Family
+
+| Alex today | Package | Role |
+|------------|---------|------|
+| Fast / deep research agents | `openai-agents==0.0.11` | Tool-use agents (`Agent`, `Runner`, `function_tool`) |
+| Bedrock models | `litellm` + `boto3` | Nova Lite/Pro routing |
+| Query router, planner, trading agents | Custom Python + Bedrock | Intent + orchestration |
+| RAG / context | `context_service.py` (partial) | Manual SQL + pgvector — **P2 `rag_engine.py` planned** |
+| Eval | `test_ragas.py` (P17) | Local RAGAS heuristics — no LangSmith yet |
+| Async pipelines | SQS + Lambda | scheduler → planner → reporter; trading debate queue |
+| Tracing | `query_latency_metrics`, `/observe` | Custom metrics — no distributed trace IDs |
+
+**Resume alignment:** Archemy used **LangSmith + RAGAS** (+30% reliability). Alex P17 covers RAGAS; **P22 adds LangSmith** for production trace + human-review loops.
+
+### Adoption Strategy (Recommended Order)
+
+```
+Phase 1 — LangSmith (P22)     ← lowest risk, highest ops value
+Phase 2 — Agentic RAG (P24)   ← can use LangChain retrievers OR native Python
+Phase 3 — LangGraph (P23)     ← formalize multi-step flows only where SQS is heavy
+Phase 4 — LangChain LCEL      ← optional retriever/chain helpers inside rag_engine only
+```
+
+**Do NOT:** Replace `server.py` OpenAI Agents SDK paths with LangChain agents wholesale — two agent frameworks = debugging hell.
+
+---
+
+### P22 — LangSmith (Tracing + Eval + Human Review)
+
+**Goal:** Production traces for every chat route, RAG retrieval, and tool call — complement `/observe` and P17 RAGAS.
+
+| Task | File / change | Detail |
+|------|---------------|--------|
+| Add dependency | `backend/researcher/pyproject.toml` | `langsmith>=0.1.0` (ECS researcher only first) |
+| Env vars | `.env`, ECS task definition (Terraform) | `LANGCHAIN_TRACING_V2=true`, `LANGCHAIN_API_KEY`, `LANGCHAIN_PROJECT=alex-production` |
+| Trace router | `query_router.py` | `@traceable` on `classify_query()` — log route, intent, entities, confidence |
+| Trace RAG | `rag_engine.py` (P2) | Trace `build_context()` — chunks retrieved, scores, token budget |
+| Trace agents | `server.py` | Wrap `Runner.run()` spans; child spans per tool/MCP call |
+| Trace ingest | `ingest_pgvector.py` | Span per vector write with `chunk_type`, `user_id` |
+| Trace trading | `debate_engine.py`, `debater_handoff.py` | Parent span `debate_run`; child per agent vote |
+| Feedback API | `frontend/app/api/alex/feedback/route.ts` *(new)* | Thumbs up/down → LangSmith `create_feedback()` |
+| Low-confidence queue | `rag_engine.py` + dashboard | Faithfulness < 0.7 → `needs_review` flag (Archemy pattern) |
+| `/observe` panel | `observe/page.tsx` | Link to LangSmith project; show 24h trace count + error rate |
+| P17 bridge | `backend/eval/ragas_runner.py` | Attach RAGAS run ID to LangSmith experiment |
+
+**Terraform:** Add `LANGCHAIN_API_KEY` to ECS researcher + optional eval Lambda via SSM Parameter Store (`terraform/4_researcher`).
+
+**Effort:** 2–3 days · **Depends:** P1 ✅, P11 (observe panels helpful)
+
+**User sees:** Every Alex answer traceable in LangSmith; team can flag bad retrieval; eval runs linked to traces.
+
+---
+
+### P23 — LangGraph (Selective Orchestration)
+
+**Goal:** Replace ad-hoc multi-step Python/SQS glue with **explicit state graphs** where checkpointing and human-in-the-loop matter.
+
+**Use LangGraph for:**
+
+| Flow | Why graph | Replaces |
+|------|-----------|----------|
+| **Agentic RAG loop** (P24) | retrieve → grade → rewrite → web fallback → generate | Custom while-loop in `rag_engine.py` |
+| **Edu fast search** (`Alex_chat_intelligence.md` C1) | vector hit → glossary → fast search → ingest | Linear `edu_fast_agent.py` |
+| **Committee mini-debate** (C6.2) | Marcus ∥ Victoria → Executor synthesize | Ad-hoc asyncio |
+| **Deep report + PDF** (C3) | deep → synthesize → render PDF → S3 | Sequential awaits in `report_agent.py` |
+| **Human approval** (P1.5, RIA) | `pending → approved → publish` with interrupt | Custom state table only |
+
+**Keep SQS + Lambda (do NOT LangGraph-ify):**
+
+| Flow | Why keep SQS |
+|------|--------------|
+| Portfolio research pipeline | Already durable, 2h schedule, proven |
+| Trading orchestrator → debate queue | High volume, Lambda burst, existing Terraform |
+| Deep parallel planner → reporter | Map-reduce at scale; LangGraph on ECS for coordination only if needed |
+
+**Deliverables:**
+
+| File | Purpose |
+|------|---------|
+| `backend/researcher/graphs/agentic_rag_graph.py` | P24 graph definition |
+| `backend/researcher/graphs/edu_fast_graph.py` | Education pipeline graph |
+| `backend/researcher/graphs/committee_graph.py` | 2-debater + executor |
+| `backend/researcher/graph_checkpoint.py` | Aurora or SQLite checkpointer for HITL resume |
+| `backend/researcher/pyproject.toml` | `langgraph>=0.2.0`, `langchain-core>=0.3.0` |
+
+**Bedrock integration:**
+
+```python
+from langchain_aws import ChatBedrockConverse
+
+llm = ChatBedrockConverse(
+    model="us.amazon.nova-lite-v1:0",
+    region_name="us-east-1",
+)
+```
+
+Use **Nova Lite** for graph routing/grading nodes; **Nova Pro** for final generation — same cost discipline as today.
+
+**Effort:** 3–5 days · **Depends:** P2, P22 (traces on graph nodes)
+
+---
+
+### LangChain (Library — RAG Primitives Only)
+
+**Goal:** Use LangChain as **retriever + document + chain utilities** inside `rag_engine.py` — not as the agent runtime.
+
+| Component | LangChain class | Alex mapping |
+|-----------|-----------------|--------------|
+| Embeddings | `SageMakerEndpointEmbeddings` *(custom wrapper)* | Existing SageMaker `alex-embedding` |
+| Vector store | `PGVector` or custom retriever over `research_vectors` | Aurora pgvector |
+| Text splitter | `RecursiveCharacterTextSplitter` / `MarkdownHeaderTextSplitter` | `chunking.py` (P2) |
+| Retriever | `EnsembleRetriever` (BM25 + vector) | Hybrid search in P2 |
+| Reranker | `ContextualCompressionRetriever` + LLM filter | Nova Lite relevance scoring |
+| LCEL chain | `retrieve \| compress \| prompt \| llm` | Fast path context injection only |
+
+**Add to `pyproject.toml` (with P2 or P24):**
+
+```
+langchain-core>=0.3.0
+langchain-aws>=0.2.0
+langchain-community>=0.3.0   # PGVector, text splitters
+langchain-text-splitters>=0.3.0
+```
+
+**Conflict avoidance:**
+
+| Keep | Don't duplicate |
+|------|-----------------|
+| OpenAI Agents SDK for tool-heavy research (`server.py`) | LangChain `create_react_agent` for same paths |
+| Custom `query_router.py` | LangChain routing middleware (optional later) |
+| `function_tool` in `tools.py` | LangChain `@tool` duplicates |
+
+**Effort:** 1–2 days (bundled with P2/P24) · **Optional** if native Python RAG is preferred
+
+---
+
+### LangChain Family — Architecture After Adoption
+
+```
+User → /api/alex/chat
+         ↓
+    query_router  ──trace──► LangSmith
+         ↓
+    ┌────┴────┬────────────┬──────────────┐
+    │         │            │              │
+  fast     edu_fast    debater      deep+parallel
+ (Agents   (LangGraph   (handoff)    (Agents SDK
+  SDK)      + RAG)                     + MCP)
+    │         │            │              │
+    └────┬────┴────────────┴──────────────┘
+         ↓
+   rag_engine (LangChain retrievers OR agentic graph P24)
+         ↓
+   pgvector / portfolio_digests / trading_floor_intelligence
+         ↓
+   synthesizer → ingest → LangSmith feedback
+```
+
+### LangChain Family — Decision Points
+
+| # | Decision | Options | Recommendation |
+|---|----------|---------|----------------|
+| 1 | LangSmith scope | ECS only vs ECS + Lambdas | **ECS first**, add planner/reporter traces in Sprint 2 |
+| 2 | LangGraph scope | Full platform vs 4 graphs | **4 graphs only** (P24, edu, committee, PDF) |
+| 3 | LangChain depth | Full LCEL vs native Python RAG | **LangChain retrievers only**; keep agents on OpenAI SDK |
+| 4 | Checkpoint store | Aurora vs SQLite vs Redis | **Aurora** (`graph_checkpoints` table) — already serverless |
+| 5 | Eval stack | RAGAS only vs RAGAS + LangSmith experiments | **Both** — RAGAS gates deploy, LangSmith traces debug |
+
+### LangChain Family — New Schema (P23 HITL checkpoints)
+
+```sql
+CREATE TABLE IF NOT EXISTS graph_checkpoints (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  thread_id VARCHAR(64) NOT NULL,
+  graph_name VARCHAR(50) NOT NULL,
+  checkpoint JSONB NOT NULL,
+  user_id UUID REFERENCES users(id),
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS gc_thread_idx ON graph_checkpoints (thread_id, created_at DESC);
+```
+
+### LangChain Family — Verification
+
+```bash
+# After P22
+LANGCHAIN_TRACING_V2=true python3 scripts/tests/test_p1_router.py
+# Confirm traces appear in LangSmith project "alex-production"
+
+# After P23
+python3 scripts/tests/test_agentic_rag_graph.py  # create with P24
+```
+
+---
+
+## Agentic RAG
+
+> **Feasibility:** ✅ **Yes — high value, aligns with P2 + `Alex_chat_intelligence.md` C1.**  
+> **Definition:** RAG where an **agent decides** whether to retrieve, what to retrieve, whether results are good enough, and whether to rewrite the query or fall back to tools — not a single static `search → inject → generate` pass.
+
+### Passive RAG (P2 baseline) vs Agentic RAG (P24)
+
+| Step | Passive RAG (P2) | Agentic RAG (P24) |
+|------|------------------|-------------------|
+| Retrieve | One vector search (top-k) | Agent may multi-query, HyDE, or skip retrieval |
+| Grade | None | LLM grades doc relevance per chunk |
+| Fallback | None | Low grade → Playwright MCP / fast search / glossary |
+| Rewrite | None | Agent rewrites query and re-retrieves (max 2 loops) |
+| Generate | Single LLM call | Generate only after `context_sufficient = true` |
+| Ingest | Post-hoc optional | Agent decides what to persist + `chunk_type` |
+| Observability | Chunk list | Full decision trace on `/observe` + LangSmith |
+
+### When Agentic RAG Applies on Alex
+
+| Route | Agentic RAG? | Why |
+|-------|--------------|-----|
+| `edu_fast` | ✅ **Yes** | "What is a bond?" — check vector → glossary → web → ingest |
+| `chat` follow-ups | ✅ **Yes** | "What about their risk?" needs session-aware re-retrieval |
+| `fast` ticker | ⚠️ Partial | Live tools primary; RAG for prior research on ticker |
+| `deep` SEC | ❌ No | MCP tools are the retrieval — agentic RAG adds latency |
+| `debater` | ⚠️ Partial | Inject RAG context before handoff; no full loop |
+| Portfolio digest reporter | ❌ No | Pipeline already has planner decomposition |
+
+### Agentic RAG Graph (LangGraph — P24)
+
+**File:** `backend/researcher/graphs/agentic_rag_graph.py`
+
+```
+                    ┌─────────────┐
+                    │   START     │
+                    │  (query)    │
+                    └──────┬──────┘
+                           ▼
+                    ┌─────────────┐
+              ┌────│ route_need  │──── skip_retrieval ──────────────┐
+              │    │  _rag?      │                                  │
+              │    └──────┬──────┘                                  │
+              │           │ retrieve                               │
+              │           ▼                                        │
+              │    ┌─────────────┐                                  │
+              │    │  retrieve   │  pgvector + portfolio_digests    │
+              │    │  _vectors   │  + trading_floor_intelligence    │
+              │    └──────┬──────┘                                  │
+              │           ▼                                        │
+              │    ┌─────────────┐     insufficient                 │
+              │    │   grade     │──────────────────┐               │
+              │    │  _documents │                  │               │
+              │    └──────┬──────┘                  ▼               │
+              │           │ sufficient      ┌─────────────┐        │
+              │           │                 │  rewrite    │        │
+              │           │                 │  _query     │──┐     │
+              │           │                 └─────────────┘  │     │
+              │           │                      ▲            │     │
+              │           │                      └────────────┘     │
+              │           │                 (max 2 loops)           │
+              │           │                          │               │
+              │           │                          ▼               │
+              │           │                 ┌─────────────┐        │
+              │           │                 │  tool       │        │
+              │           │                 │  _fallback  │        │
+              │           │                 │ (MCP/glossary)│       │
+              │           │                 └──────┬──────┘        │
+              │           │                        │               │
+              │           ▼                        ▼               ▼
+              │    ┌─────────────────────────────────────────────┐
+              │    │              generate_answer                 │
+              │    │         (Nova Lite/Pro + context bundle)     │
+              │    └──────────────────────┬──────────────────────┘
+              │                           ▼
+              │    ┌─────────────┐   ┌─────────────┐
+              │    │  self_check │──►│   ingest    │ (if novel)
+              │    │  _quality   │   │  _decision  │
+              │    └──────┬──────┘   └─────────────┘
+              │           │ low confidence → needs_review (P22)
+              │           ▼
+              │         END
+              └──────────────────────────────────────────────────►
+```
+
+### Agentic RAG — State Schema
+
+```python
+class AgenticRAGState(TypedDict):
+    query:            str
+    user_id:          str
+    session_id:       str
+    route:            str           # edu_fast | chat | fast
+    rewritten_queries: list[str]
+    retrieved_chunks: list[dict]     # {content, source, score, chunk_type}
+    grade_scores:     list[float]
+    context_bundle:   str
+    answer:           str
+    retrieval_loops:  int
+    used_fallback:    bool
+    ingest:           bool
+    confidence:       float
+    needs_review:     bool
+```
+
+### Agentic RAG — Node Implementations
+
+| Node | Model | Logic |
+|------|-------|-------|
+| `route_need_rag` | Nova Lite | Edu/concept/follow-up → retrieve; live-price-only → skip |
+| `retrieve_vectors` | — | Hybrid: pgvector cosine + `portfolio_digests` + `trading_floor_intelligence` (P14) |
+| `grade_documents` | Nova Lite | Per-chunk relevant / irrelevant / ambiguous (CRAG-style) |
+| `rewrite_query` | Nova Lite | HyDE or multi-query expansion; increment `retrieval_loops` |
+| `tool_fallback` | Tools | Glossary seed → Playwright allowlist (edu) → yfinance (ticker) |
+| `generate_answer` | Nova Lite/Pro | Inject `context_bundle` with attribution footnotes |
+| `self_check_quality` | Nova Lite | Faithfulness self-grade; < 0.7 → `needs_review` |
+| `ingest_decision` | Rule + LLM | Novel + high confidence → `ingest_pgvector` async |
+
+### Agentic RAG — Techniques Mapped
+
+| Technique | Alex use | Implementation |
+|-----------|----------|----------------|
+| **Adaptive RAG** | Router picks retrieve vs tools vs skip | `route_need_rag` node |
+| **Corrective RAG (CRAG)** | Grade chunks; fallback if poor | `grade_documents` + `tool_fallback` |
+| **Self-RAG** | Self-check before return | `self_check_quality` node |
+| **HyDE** | Hypothetical doc for better embedding | `rewrite_query` option |
+| **Multi-query** | 3 variant queries merged | `rewrite_query` option |
+| **Parent-child chunks** | Long deep answers | P3 `chunking.py` parent_id column |
+| **Reranking** | Top 20 → top 5 | Nova Lite listwise rank or Cohere (optional) |
+
+### Agentic RAG — Deliverables (P24)
+
+| File | Purpose |
+|------|---------|
+| `backend/researcher/agentic_rag.py` | Graph builder + `run_agentic_rag()` entry |
+| `backend/researcher/graphs/agentic_rag_graph.py` | LangGraph state machine |
+| `backend/researcher/rag_grader.py` | Chunk relevance scoring |
+| `backend/researcher/rag_fallback.py` | Glossary + MCP + fast search fallbacks |
+| `backend/researcher/rag_engine.py` | Shared retrieval (P2) — used by graph nodes |
+| `scripts/tests/test_agentic_rag.py` | Loop limits, fallback triggers, ingest rules |
+| `frontend/app/observe/page.tsx` | Agentic RAG panel: loops, fallback rate, grade distribution |
+
+### Agentic RAG — API Integration
+
+Wire into existing routes (no new user-facing endpoint):
+
+| Entry | Change |
+|-------|--------|
+| `/research/conversation/stream` | `intent=education` → `run_agentic_rag(route='edu_fast')` |
+| `/research/stream` (fast) | Prepend agentic RAG context for ticker prior research |
+| `/api/alex/chat` | SSE events: `rag_step`, `chunks_retrieved`, `fallback_used`, `confidence` |
+
+**New SSE events:**
+
+```json
+{ "type": "rag_step", "step": "grade_documents", "relevant": 3, "irrelevant": 2 }
+{ "type": "rag_fallback", "source": "glossary", "query": "what is a bond" }
+{ "type": "rag_done", "loops": 1, "confidence": 0.91, "ingested": true }
+```
+
+### Agentic RAG — Schema Extensions
+
+```sql
+-- Extend rag_attributions (P2) for agentic decisions
+ALTER TABLE rag_attributions ADD COLUMN IF NOT EXISTS retrieval_loops INTEGER DEFAULT 0;
+ALTER TABLE rag_attributions ADD COLUMN IF NOT EXISTS fallback_source VARCHAR(50);
+ALTER TABLE rag_attributions ADD COLUMN IF NOT EXISTS grade_scores JSONB DEFAULT '[]';
+ALTER TABLE rag_attributions ADD COLUMN IF NOT EXISTS agentic_graph VARCHAR(50) DEFAULT 'agentic_rag_v1';
+```
+
+### Agentic RAG — Without LangGraph (Fallback)
+
+If P23 is deferred, implement the same loop in `agentic_rag.py` as a native async Python state machine:
+
+```python
+async def run_agentic_rag(state: AgenticRAGState) -> AgenticRAGState:
+    for loop in range(MAX_RETRIEVAL_LOOPS):
+        chunks = await retrieve_vectors(state)
+        grades = await grade_documents(state, chunks)
+        if grades.sufficient:
+            break
+        state = await rewrite_or_fallback(state, grades)
+    state.answer = await generate_answer(state)
+    return state
+```
+
+LangGraph adds **checkpointing, HITL interrupt, and visual debugging** — recommended but not blocking.
+
+### Agentic RAG — Effort & Dependencies
+
+| Item | Effort | Depends on |
+|------|--------|------------|
+| P2 `rag_engine.py` (passive retrieval) | 4–5 days | P0 ✅ |
+| P24 agentic loop (native Python) | 3–4 days | P2 |
+| P24 + LangGraph version | +1–2 days | P23 |
+| LangSmith traces on RAG nodes | 0.5 day | P22 |
+| P17 eval Path C (agentic RAG gate) | 1 day | P17, P24 |
+
+**Total P24:** 4–6 days (with P2 prerequisite)
+
+### Agentic RAG — P17 Eval Extension (Path C)
+
+Add to `ragas_runner.py` after P24:
+
+| Test query type | Assert |
+|-----------------|--------|
+| Education (cache miss) | `fallback_used` at least once OR `ingest=true` |
+| Follow-up with session | `retrieval_loops >= 1`, context contains prior ticker |
+| Live price query | `retrieval_skipped=true`, answer has live price |
+| Adversarial (no data) | `needs_review=true` OR graceful decline — not hallucination |
+
+**Gate:** Agentic RAG faithfulness ≥ 0.88 on education benchmark set.
+
+### Agentic RAG — Recommended Sprint Placement
+
+```
+Sprint 2 (with P2):
+  P2  rag_engine.py (passive hybrid retrieval)
+  P24-lite  agentic loop for edu_fast only (Alex_chat_intelligence C1)
+
+Sprint 3:
+  P22  LangSmith traces
+  P24  full agentic RAG on chat + fast paths
+
+Sprint 4 (optional):
+  P23  LangGraph refactor of P24 + committee + PDF graphs
+```
 
 ---
 
@@ -1830,8 +2686,13 @@ These phases layer on top of P0–P17 without blocking MVP delivery. **P17 (RAGA
 |----------|---------|
 | `scripts/TEST_PLAYBOOK.md` | **Test after every addition** — 3-layer protocol (automated → deploy → frontend checkpoints) |
 | `Alex_AI_2.0.md` | Detailed AI plan — router, RAG, MCP, synthesis, guardrails |
+| `Alex_chat_intelligence.md` | Chat routing upgrades — edu fast search, PDF reports, debater handoffs, earnings agent |
 | `Alex_Trading_Floor_2.0.md` | Detailed trading plan — simulation, scout, RL, autonomy |
 | `Alex_Master_Implementation_Plan.md` | **This file** — unified implementation order |
+| `usecases.md` | Cross-industry agentic AI use cases, startup ideas, beginner setup guide |
+| `Agentic_Usecase.md` | Agentic use cases on **current** Alex setup — finance-native, demos, matrix |
+| `Alex_chat_intelligence.md` | Chat routing — edu fast search, PDF, debater handoffs; **P24 edu_fast target** |
+| `RIA.md` | **RIA Copilot** — white-label Alex for advisors; architecture leverage + MVP roadmap |
 | `Startup.md` | Business model, monetization, startup ideas, unit economics |
 | `Ophelia.md` | Interview prep — Alex → Ophelia mapping, talking points, intro |
 

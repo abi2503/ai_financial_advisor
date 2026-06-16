@@ -23,12 +23,15 @@ from contextlib import asynccontextmanager
 
 logging.getLogger("LiteLLM").setLevel(logging.CRITICAL)
 
-from prompts import get_agent_instructions, get_fast_agent_instructions, get_deep_research_instructions, DEFAULT_RESEARCH_PROMPT
+from prompts import (
+    get_agent_instructions, get_fast_agent_instructions, get_deep_research_instructions,
+    DEFAULT_RESEARCH_PROMPT, build_deep_scope_directive,
+)
 from mcp_servers import create_playwright_mcp_server
 from tools import ingest_financial_document, get_stock_data, get_sec_filings
 from query_trace import QueryTrace, activate_trace, deactivate_trace, record_mcp
 from latency_tracker import LatencyTracker, activate_tracker, deactivate_tracker, get_tracker
-from query_router import classify_query, routing_steps, RouteDecision
+from query_router import classify_query, routing_steps, RouteDecision, infer_research_scope, deep_reasoning_steps
 
 GUARDRAIL_ID      = os.getenv("BEDROCK_GUARDRAIL_ID",      "eea439luokx8")
 GUARDRAIL_VERSION = os.getenv("BEDROCK_GUARDRAIL_VERSION", "1")
@@ -272,6 +275,97 @@ def get_context(topic: str, user_id: str, session_id: str, fast: bool = False) -
         return ""
 
 
+def _active_ticker_directive(topic: str, entities: list[str] | None = None, context: str = "") -> str:
+    """Tell the agent which symbol to research — critical for pronoun follow-ups."""
+    from query_router import resolve_entities
+    tickers = entities or resolve_entities(topic, context)
+    if not tickers:
+        return ""
+    primary = tickers[0]
+    return (
+        f"\n\nACTIVE TICKER: {primary}\n"
+        f"The user's question refers to {primary}. "
+        f"Call tools with ticker=\"{primary}\" — do NOT substitute another symbol "
+        f"(e.g. from portfolio holdings).\n"
+    )
+
+
+def _is_stub_response(text: str, mode: str = "deep", scope=None) -> bool:
+    """Detect agent returning ingest confirmation instead of full analysis."""
+    if not text or len(text.strip()) < 40:
+        return True
+    lower = text.lower()
+    stub_phrases = (
+        "successfully stored", "research has been stored", "been completed and stored",
+        "stored research for topic", "if you have any more questions",
+        "feel free to ask", "analysis has been successfully completed",
+        "ingest saved for",
+    )
+    if any(p in lower for p in stub_phrases) and len(text) < 900:
+        return True
+    if mode == "deep" and scope and scope.sec_forms:
+        primary = scope.sec_forms[0].lower()
+        has_sec = primary in lower or "risk factor" in lower or "filing date" in lower
+        if not has_sec and "recommendation" in lower and len(text) < 700:
+            return True
+    return False
+
+
+async def _recover_deep_sec_response(topic: str, ticker: str, scope=None) -> str:
+    """Fallback when deep agent returns a stub — fetch SEC data directly."""
+    from datetime import datetime as dt
+    today = dt.now().strftime("%B %d, %Y")
+    scope = scope or infer_research_scope(topic)
+    form  = scope.sec_forms[0] if scope.sec_forms else "10-K"
+    filing = await get_sec_filings(ticker, form)
+    if filing.startswith("No ") or filing.startswith("Could not"):
+        return filing
+    title = {
+        "10-K": "10-K Analysis",
+        "8-K":  "8-K Current Report",
+        "10-Q": "10-Q Quarterly Report",
+        "4":    "Insider Trading (Form 4)",
+    }.get(form, f"{form} Analysis")
+    return (
+        f"**{ticker} — {title} | {today}**\n\n"
+        f"---\n\n**SEC {form} Analysis** *(Source: SEC EDGAR via EdgarTools)*\n\n"
+        f"{filing}\n\n"
+        f"---\n\n> ⚠️ This is research not financial advice.\n"
+        f"> Sources: SEC EDGAR (EdgarTools) | {today}\n"
+    )
+
+
+def _prepare_deep_research(topic: str, user_id: str, session_id: str):
+    """Build scoped instructions and agent input for deep research."""
+    from query_router import enrich_follow_up_query, resolve_entities
+
+    context = get_context(topic, user_id, session_id)
+    enriched, forced_scope = enrich_follow_up_query(topic, context)
+    work_topic = enriched
+    scope        = forced_scope or infer_research_scope(work_topic)
+    entities     = resolve_entities(work_topic, context)
+    ticker_hint  = _active_ticker_directive(work_topic, entities=entities, context=context)
+    instructions = get_deep_research_instructions()
+    if context:
+        instructions += f"\n\n{context}"
+    instructions += (
+        "\n\nPRIOR RESEARCH in context is background only. "
+        "Fetch fresh data for the sections in scope. "
+        "Never reply with only a storage confirmation.\n"
+    )
+    instructions += build_deep_scope_directive(scope)
+    if ticker_hint:
+        instructions += ticker_hint
+
+    agent_input = (
+        f"Deep research: {work_topic}{ticker_hint}\n"
+        f"Scope: {scope.scope} — {scope.label}\n"
+        f"Call ONLY the tools listed in the SCOPED RESEARCH DIRECTIVE. "
+        f"Return ONLY the sections listed there."
+    )
+    return instructions, scope, entities, agent_input, context
+
+
 def save_session(user_id: str, session_id: str, topic: str, response: str):
     """Save messages to session — non-fatal if fails."""
     if not user_id:
@@ -307,6 +401,8 @@ def _conversation_canned_reply(query: str, intent: str) -> Optional[str]:
             "- *Compare NVDA vs AMD* — deep analysis\n\n"
             "_Not financial advice. Consult a licensed advisor before any trading decisions._"
         )
+    if intent in ("education", "conversation", "sec_education", "general"):
+        return None
     if intent == "off_topic":
         return (
             "I'm Alex, your AI **financial research** assistant — I focus on stocks, "
@@ -316,8 +412,17 @@ def _conversation_canned_reply(query: str, intent: str) -> Optional[str]:
             "- *What is NVDA trading at?* (live research)\n"
             "- *Compare NVDA vs AMD* (deep research)"
         )
-    from query_router import _has_finance_topic, _has_educational_frame, _is_off_topic
-    if _is_off_topic(query) or (_has_educational_frame(query) and not _has_finance_topic(query)):
+    if intent == "sec_education":
+        return None
+    from query_router import (
+        _has_finance_topic, _has_educational_frame, _is_off_topic, _is_sec_conceptual_education,
+    )
+    if _is_sec_conceptual_education(query):
+        return None
+    from query_router import _has_pronoun_reference, _looks_like_followup
+    if _has_pronoun_reference(query) or _looks_like_followup(query):
+        return None
+    if _is_off_topic(query):
         return (
             "I'm Alex, your AI **financial research** assistant — I focus on stocks, "
             "bonds, markets, and portfolio topics.\n\n"
@@ -329,15 +434,23 @@ def _conversation_canned_reply(query: str, intent: str) -> Optional[str]:
 def _build_conversation_prompt(query: str, user_id: str, session_id: str, intent: str) -> tuple[str, int]:
     """Lightweight prompt for chat — skip DB context on education for speed."""
     conv = ""
-    if intent not in ("education", "greeting"):
+    if intent not in ("education", "greeting", "sec_education"):
         try:
             from context_service import get_conversation_context
             conv = get_conversation_context(user_id, session_id, limit=4)
         except Exception:
             pass
 
-    is_edu = intent in ("education", "conversation", "general", "greeting")
-    max_tokens = 550 if is_edu else 400
+    is_edu = intent in ("education", "sec_education", "conversation", "general", "greeting")
+    max_tokens = 650 if intent == "sec_education" else (550 if is_edu else 400)
+
+    sec_note = ""
+    if intent == "sec_education":
+        sec_note = (
+            "- SEC/filing education: explain types, differences, and purpose clearly.\n"
+            "- Use bullets or a short table when comparing filing types (10-K, 8-K, Form 4, 10-Q).\n"
+            "- Do NOT claim you fetched live EDGAR data — this is conceptual education.\n"
+        )
 
     prompt = f"""You are Alex, a warm AI financial assistant.
 
@@ -348,15 +461,15 @@ User: {query}
 Instructions:
 - ONLY financial/investing topics. Politely decline anything else.
 - Answer in clear markdown. For education: 2-3 short paragraphs max, use bullets if helpful.
-- No buy/sell recommendations. Be accurate and concise."""
+{sec_note}- No buy/sell recommendations. Be accurate and concise."""
     return prompt, max_tokens
 
 
 _STREAM_DONE = object()
 
 
-async def stream_bedrock_conversation(prompt: str, max_tokens: int = 550):
-    """Yield Nova Lite text tokens as they arrive."""
+async def stream_bedrock_conversation(prompt: str, max_tokens: int = 550, tracker=None):
+    """Yield Nova Lite text tokens; records Bedrock usage on tracker when present."""
     model_id = FAST_MODEL.replace("bedrock/", "")
     body = json.dumps({
         "messages": [{"role": "user", "content": [{"text": prompt}]}],
@@ -365,6 +478,7 @@ async def stream_bedrock_conversation(prompt: str, max_tokens: int = 550):
 
     queue: asyncio.Queue = asyncio.Queue()
     loop = asyncio.get_running_loop()
+    usage_holder = {"input": 0, "output": 0}
 
     def _produce() -> None:
         try:
@@ -375,13 +489,16 @@ async def stream_bedrock_conversation(prompt: str, max_tokens: int = 550):
                 accept="application/json",
                 body=body,
             )
-            # EventStream is iterable via `for`, not `next()` — using next() raises TypeError
             for event in resp["body"]:
                 chunk = json.loads(event["chunk"]["bytes"])
                 if "contentBlockDelta" in chunk:
                     text = chunk["contentBlockDelta"]["delta"].get("text", "")
                     if text:
                         asyncio.run_coroutine_threadsafe(queue.put(text), loop).result()
+                if "metadata" in chunk:
+                    u = chunk["metadata"].get("usage", {})
+                    usage_holder["input"]  = int(u.get("inputTokens", 0) or 0)
+                    usage_holder["output"] = int(u.get("outputTokens", 0) or 0)
         except Exception as exc:
             asyncio.run_coroutine_threadsafe(queue.put(exc), loop).result()
         finally:
@@ -396,6 +513,9 @@ async def stream_bedrock_conversation(prompt: str, max_tokens: int = 550):
         if isinstance(item, Exception):
             raise item
         yield item
+
+    if tracker and (usage_holder["input"] or usage_holder["output"]):
+        tracker.set_token_usage(usage_holder["input"], usage_holder["output"])
 
 
 # ============================================
@@ -463,14 +583,13 @@ async def run_deep_agent(
     model = LitellmModel(model=MODEL)
 
     t0           = time.time()
-    context      = get_context(topic, user_id, session_id)
+    instructions, scope, entities, agent_input, context = _prepare_deep_research(
+        topic, user_id, session_id,
+    )
     ctx_ms       = int((time.time() - t0) * 1000)
     tr           = get_tracker()
     if tr:
         tr.mark_context_ms(ctx_ms)
-    instructions = get_deep_research_instructions()
-    if context:
-        instructions += f"\n\n{context}"
 
     record_mcp("playwright-mcp", success=True)
 
@@ -486,21 +605,26 @@ async def run_deep_agent(
                 )
                 result = await Runner.run(
                     agent,
-                    input     = f"Deep research: {topic}",
+                    input     = agent_input,
                     max_turns = 20,
                 )
     except Exception as e:
         record_mcp("playwright-mcp", success=False, error=str(e)[:120])
         raise
 
+    output = result.final_output
+    if _is_stub_response(output, mode="deep", scope=scope) and entities:
+        logger.warning(f"Deep stub detected for {topic} — recovering SEC data for {entities[0]}")
+        output = await _recover_deep_sec_response(topic, entities[0], scope)
+
     agent_ms = int((time.time() - t0) * 1000)
     if tr:
         tr.mark_agent_ms(agent_ms)
-        tr.set_response(result.final_output)
+        tr.set_response(output)
         tr.set_model(MODEL)
 
-    save_session(user_id, session_id, topic, result.final_output)
-    return result.final_output
+    save_session(user_id, session_id, topic, output)
+    return output
 
 
 # ============================================
@@ -622,7 +746,7 @@ async def research_conversation_stream(request: ResearchRequest):
             else:
                 prompt, max_tokens = _build_conversation_prompt(topic, user_id, session_id, intent)
                 reply_parts = []
-                async for token in stream_bedrock_conversation(prompt, max_tokens):
+                async for token in stream_bedrock_conversation(prompt, max_tokens, tracker=tracker):
                     if not reply_parts:
                         tracker.mark_first_token_ms(int((time.monotonic() - tracker.t0) * 1000))
                     reply_parts.append(token)
@@ -812,10 +936,16 @@ async def research_stream(request: ResearchRequest):
             ctx_t0       = time.time()
             context      = get_context(topic, user_id, session_id, fast=True)
             tracker.mark_context_ms(int((time.time() - ctx_t0) * 1000))
+            from query_router import enrich_follow_up_query
+            enriched, _  = enrich_follow_up_query(topic, context)
+            work_topic   = enriched
             instructions = get_fast_agent_instructions()
+            ticker_hint  = _active_ticker_directive(work_topic, context=context)
             if context:
                 instructions += f"\n\n{context}"
                 yield f"data: {json.dumps({'type': 'reasoning', 'content': '🧠 Loading your portfolio context...'})}\n\n"
+            if ticker_hint:
+                instructions += ticker_hint
 
             os.environ["AWS_REGION_NAME"]    = REGION
             os.environ["AWS_REGION"]         = REGION
@@ -838,7 +968,7 @@ async def research_stream(request: ResearchRequest):
 
                 agent_task = asyncio.create_task(Runner.run(
                     agent,
-                    input     = f"Research this investment topic: {topic}",
+                    input     = f"Research this investment topic: {work_topic}{ticker_hint}",
                     max_turns = FAST_TURNS,
                 ))
                 while not agent_task.done():
@@ -921,17 +1051,18 @@ async def research_deep_stream(request: ResearchRequest):
 
     async def generate():
         try:
-            yield f"data: {json.dumps({'type': 'reasoning', 'content': '🔌 Connecting to SEC EDGAR...'})}\n\n"
-            yield f"data: {json.dumps({'type': 'reasoning', 'content': '📄 Fetching 10-K filings...'})}\n\n"
-            yield f"data: {json.dumps({'type': 'reasoning', 'content': '📊 Reading analyst ratings...'})}\n\n"
+            prep_t0 = time.time()
+            instructions, scope, entities, agent_input, context = _prepare_deep_research(
+                topic, user_id, session_id,
+            )
+            tracker.mark_context_ms(int((time.time() - prep_t0) * 1000))
 
-            ctx_t0       = time.time()
-            context      = get_context(topic, user_id, session_id)
-            tracker.mark_context_ms(int((time.time() - ctx_t0) * 1000))
-            instructions = get_deep_research_instructions()
+            for step in deep_reasoning_steps(scope):
+                yield f"data: {json.dumps({'type': 'reasoning', 'content': step})}\n\n"
+
             if context:
-                instructions += f"\n\n{context}"
                 yield f"data: {json.dumps({'type': 'reasoning', 'content': '🧠 Loading prior research context...'})}\n\n"
+            yield f"data: {json.dumps({'type': 'reasoning', 'content': f'🎯 Scope: {scope.label}'})}\n\n"
 
             os.environ["AWS_REGION_NAME"]    = REGION
             os.environ["AWS_REGION"]         = REGION
@@ -955,7 +1086,7 @@ async def research_deep_stream(request: ResearchRequest):
 
                     agent_task = asyncio.create_task(Runner.run(
                         agent,
-                        input     = f"Deep research: {topic}",
+                        input     = agent_input,
                         max_turns = 20,
                     ))
                     while not agent_task.done():
@@ -964,6 +1095,10 @@ async def research_deep_stream(request: ResearchRequest):
                         yield f"data: {json.dumps({'type': 'tick', 'elapsed_ms': elapsed_ms})}\n\n"
                     result = await agent_task
                     full_response = result.final_output
+
+            if _is_stub_response(full_response, mode="deep", scope=scope) and entities:
+                logger.warning(f"Deep stub detected for {topic} — recovering SEC data for {entities[0]}")
+                full_response = await _recover_deep_sec_response(topic, entities[0], scope)
 
             tracker.mark_agent_ms(int((time.time() - agent_start) * 1000))
             save_session(user_id, session_id, topic, full_response)

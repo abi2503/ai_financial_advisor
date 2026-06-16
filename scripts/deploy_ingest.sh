@@ -18,6 +18,7 @@ pip install boto3 \
   --quiet 2>/dev/null
 
 cp backend/ingest/ingest_pgvector.py "$TEMP/ingest.py"
+cp backend/ingest/rag_utils.py "$TEMP/rag_utils.py"
 find "$TEMP" -name "*.pyc" -delete 2>/dev/null || true
 
 (cd "$TEMP" && zip -r "../lambda_pgvector.zip" . > /dev/null)

@@ -1,8 +1,10 @@
 import { auth } from '@clerk/nextjs/server'
 import { NextResponse } from 'next/server'
 import { RDSDataClient, ExecuteStatementCommand } from '@aws-sdk/client-rds-data'
+import { LambdaClient, InvokeCommand } from '@aws-sdk/client-lambda'
 
-const rds = new RDSDataClient({ region: process.env.AWS_REGION || 'us-east-1' })
+const rds    = new RDSDataClient({ region: process.env.AWS_REGION || 'us-east-1' })
+const lambda = new LambdaClient({ region: process.env.AWS_REGION || 'us-east-1' })
 
 const DB = {
   resourceArn: process.env.DB_CLUSTER_ARN!,
@@ -118,5 +120,35 @@ export async function GET() {
       snapshots: [], alerts: [], latest: null, weeklyTotal: 0, mtdTotal: 0,
       ops: null, health: [], healthScore: null, pollIntervalMs: 1800000, updatedAt: null,
     })
+  }
+}
+
+/** Trigger alex-ops-agent Lambda, then client re-fetches GET /api/ops */
+export async function POST() {
+  const { userId } = await auth()
+  if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
+  try {
+    const response = await lambda.send(new InvokeCommand({
+      FunctionName:   'alex-ops-agent',
+      InvocationType: 'RequestResponse',
+      Payload:        Buffer.from(JSON.stringify({ source: 'manual', action: 'monitor' })),
+    }))
+
+    const raw    = JSON.parse(Buffer.from(response.Payload ?? new Uint8Array()).toString())
+    const body   = typeof raw.body === 'string' ? JSON.parse(raw.body) : raw.body ?? raw
+    const failed = raw.statusCode && raw.statusCode >= 400
+
+    if (failed) {
+      return NextResponse.json(
+        { error: body?.error || 'Ops agent returned an error', detail: body },
+        { status: 502 },
+      )
+    }
+
+    return NextResponse.json({ success: true, ...body })
+  } catch (err) {
+    console.error('Ops agent invoke error:', err)
+    return NextResponse.json({ error: 'Failed to run ops agent' }, { status: 500 })
   }
 }

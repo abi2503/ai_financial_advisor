@@ -2,7 +2,9 @@
 
 > **Status:** PARKED — awaiting approval before implementation  
 > **Created:** June 13, 2026  
-> **Scope:** Autonomous paper-trading simulation, MCP intelligence, RL learning, user-configurable debates, full observability mapping
+> **Scope:** Autonomous paper-trading simulation, MCP intelligence, RL learning, user-configurable debates, full observability mapping  
+> **Change log:** All shipped changes must also be recorded in `Alex_report.md` §33 (rationale, tech, verification)  
+> **Infrastructure:** All AWS resource changes via Terraform only — see `Alex_Master_Implementation_Plan.md` Infrastructure Policy
 
 ---
 
@@ -11,19 +13,24 @@
 1. [Executive Summary](#executive-summary)
 2. [Current State Assessment](#current-state-assessment)
 3. [Target Architecture](#target-architecture)
-4. [Phase 1 — Paper Trading Simulation Engine](#phase-1--paper-trading-simulation-engine)
-5. [Phase 2 — User-Configurable Autonomous Debates](#phase-2--user-configurable-autonomous-debates)
-6. [Phase 3 — Agentic Add-ons](#phase-3--agentic-add-ons)
-7. [Phase 4 — MCP Capabilities](#phase-4--mcp-capabilities)
-8. [Phase 5 — RL Learning Loop](#phase-5--rl-learning-loop)
-9. [Phase 6 — Observability Page Mapping](#phase-6--observability-page-mapping)
-10. [Phase 7 — Frontend Changes](#phase-7--frontend-changes)
-11. [Phase 8 — Infrastructure & Deploy](#phase-8--infrastructure--deploy)
-12. [Implementation Phases & Estimates](#implementation-phases--estimates)
-13. [MVP Recommendation](#mvp-recommendation)
-14. [Risks & Guardrails](#risks--guardrails)
-15. [Decision Points for Approval](#decision-points-for-approval)
-16. [Key File Index](#key-file-index)
+4. [Phase 0.6 — Full Fresh Start Toggle (New-User State)](#phase-06--full-fresh-start-toggle-new-user-state)
+5. [Phase 1 — Paper Trading Simulation Engine](#phase-1--paper-trading-simulation-engine)
+6. [Phase 1.5 — Dashboard Recommendation Approval (Human-in-the-Loop)](#phase-15--dashboard-recommendation-approval-human-in-the-loop)
+7. [Phase 2 — User-Configurable Autonomous Debates](#phase-2--user-configurable-autonomous-debates)
+8. [Phase 3 — Agentic Add-ons](#phase-3--agentic-add-ons)
+9. [Phase 4 — MCP Capabilities](#phase-4--mcp-capabilities)
+10. [Phase 5 — RL Learning Loop](#phase-5--rl-learning-loop)
+11. [Phase 6 — Observability Page Mapping](#phase-6--observability-page-mapping)
+12. [Phase 7 — Frontend Changes](#phase-7--frontend-changes)
+13. [Phase 8 — Infrastructure & Deploy](#phase-8--infrastructure--deploy)
+14. [Implementation Phases & Estimates](#implementation-phases--estimates)
+15. [MVP Recommendation](#mvp-recommendation)
+16. [Risks & Guardrails](#risks--guardrails)
+17. [Decision Points for Approval](#decision-points-for-approval)
+18. [Key File Index](#key-file-index)
+19. [Data Source & MCP Registry](#data-source--mcp-registry)
+20. [Tools-Only Agent Action Model](#tools-only-agent-action-model)
+21. [Tagger Agent & Tagged Observability](#tagger-agent--tagged-observability)
 
 ---
 
@@ -34,6 +41,12 @@ Alex already has a strong **analysis + paper-log** foundation: 6-agent debate, S
 This plan extends existing infrastructure rather than replacing it. All subsystems must be visible on the `/observe` observability page.
 
 **Core user experience goal:** Agents autonomously trade against a virtual account seeded from the user's real portfolio value, with full transparency — the user watches a simulation replay of how agents debate, decide, and execute paper trades.
+
+**Human-in-the-loop goal:** Debate outcomes surface on the **dashboard** as actionable recommendations for the user's **real** portfolio. Nothing is applied automatically — the user reviews rationale grounded in debate context and current holdings, then explicitly approves or dismisses. Approved actions update `portfolios` and are tagged **`trading_floor_recommendation`**.
+
+**Testing goal:** Two reset controls — **Reset Debate Context** (trading sim only, ✅ implemented) and **Fresh Start** (all user Aurora data, P0.6) — so developers and users can return to a clean slate without dropping DDL or affecting other tenants.
+
+**Observability goal:** Every data fetch, MCP call, tool invocation, and portfolio mutation is tagged by the **Tagger Agent** and visible on `/observe` with filterable tag pills — full traceability from debate → tool → portfolio change.
 
 ---
 
@@ -50,6 +63,10 @@ This plan extends existing infrastructure rather than replacing it. All subsyste
 | Portfolio → orchestrator ticker selection | ✅ Working | `backend/agents/trading/core/orchestrator.py` |
 | Observability (`/observe`) — cost, latency, guardrails | ✅ Working | `frontend/app/observe/page.tsx` |
 | Global ON/OFF toggle (SSM) | ✅ Working | `frontend/app/api/trading/toggle/route.ts` |
+| Reset debate context (trading tables only) | ✅ Working | `frontend/app/api/trading/reset/route.ts`, `frontend/lib/tradingDb.ts` |
+| Full fresh start (all user Aurora data) | 🔲 Planned | Phase 0.6 — `POST /api/account/fresh-start` |
+| Tool-only agent actions (no direct SQL in agents) | 🔲 Planned | Tools-Only Action Model — refactor orchestrator/debate_engine |
+| Tagger agent for observe / event labels | 🔲 Planned | Tagger Agent — Nova Lite post-action labeling |
 | Market data (yfinance, CNN Fear & Greed, Polygon, Alpha Vantage) | ✅ Working | `backend/agents/trading/tools/market_data.py` |
 | Portfolio research digests (every 2h) | ✅ Working | `portfolio_digests` table, dashboard cards |
 
@@ -64,6 +81,8 @@ This plan extends existing infrastructure rather than replacing it. All subsyste
 | `trading_daily_pnl` table exists but has **no INSERT/UPDATE** | No P&L rollup |
 | Trading MCP stub is **empty** (`backend/agents/trading/mcp/__init__.py`) | No live web/SEC context in debates |
 | Portfolio research digests **not fed** into agent debate prompts | Missed intelligence |
+| Debate results **not surfaced** on dashboard for user approval | Simulation disconnected from real portfolio |
+| No human-in-the-loop path from `simulated_trades` → `portfolios` | Users cannot adopt agent decisions safely |
 | Observer Lambda exists but is **not deployed** | No daily digest email |
 | `/observe` missing simulation, RL, P&L, scout panels | Incomplete observability |
 | `simulated_trades.pnl` never populated | No outcome tracking |
@@ -82,6 +101,7 @@ This plan extends existing infrastructure rather than replacing it. All subsyste
 | Reid Morrison | Macro strategist | Nova Pro | `agents/reid.py` |
 | Elena Vasquez | Risk manager | Nova Lite | `agents/elena.py` |
 | Executor (Alex) | PM synthesis | Nova Pro | `core/debate_engine.py` → `run_executor()` |
+| **Tagger (Nova)** (planned) | Metadata & observability labels | Nova Lite | `agents/tagger.py` — assigns tags to tool calls, events, recs |
 
 ### Current Trigger Flow
 
@@ -110,6 +130,7 @@ Global gate: SSM /alex/trading/enabled (bypassed with force:true on manual run)
 | `agent_observations` | Per-call tokens, cost, latency, guardrails | Written by `base_agent.store_observation()` |
 | `agent_performance` | Weekly agent accuracy/outcome tracking | **Table exists; no writes** |
 | `portfolio_digests` | Per-stock research cards (from portfolio research pipeline) | ✅ Active — not yet fed to trading agents |
+| `trading_recommendations` (planned P1.5) | Pending dashboard recs from debate → user approve → real portfolio | **Not built** |
 
 ---
 
@@ -119,7 +140,7 @@ Global gate: SSM /alex/trading/enabled (bypassed with force:true on manual run)
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                           USER LAYER                                     │
 │  /trading (Simulation + Settings)  /observe (Full Observability)        │
-│  /portfolio (holdings + agent recs)  /dashboard (summary card)         │
+│  /portfolio (holdings + rec badges)  /dashboard (pending recs + approve) │
 └──────────────────────────────┬──────────────────────────────────────────┘
                                │
 ┌──────────────────────────────▼──────────────────────────────────────────┐
@@ -168,6 +189,199 @@ Global gate: SSM /alex/trading/enabled (bypassed with force:true on manual run)
 │  scout_candidates (new) | trading_events (new)                           │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
+
+---
+
+## Phase 0.6 — Full Fresh Start Toggle (New-User State)
+
+**Goal:** Provide a **single toggle/button** that wipes **all user-scoped rows** in Aurora for the logged-in user, returning the platform to the same empty state as a **brand-new login** — clean portfolio, no chat history, no research memory, no simulation, no pending recommendations. Intended for **testing**, demos, and recovering from bad state without manual SQL.
+
+> **Not the same as Reset Debate Context** (✅ implemented) — that only clears trading simulation tables and re-seeds from the existing portfolio. Fresh Start clears **everything** user-owned.
+
+### Reset tiers (comparison)
+
+| Control | Location | Scope | Portfolio | Chat / RAG | Trading sim | Re-seed after |
+|---------|----------|-------|-----------|------------|-------------|---------------|
+| **Reset Debate Context** | `/trading` | 8 trading tables | **Kept** | **Kept** | Cleared → re-seeded from portfolio | Yes — mirror current holdings |
+| **Fresh Start** | `/trading` + `/dashboard` | All user-scoped tables (see below) | **Cleared** | **Cleared** | Cleared | **No** — empty like new user |
+| **Fresh context on enable** | `/trading` checkbox | Trading tables only when turning ON | Kept | Kept | Cleared → re-seeded | Yes — on enable |
+
+### What gets cleared (per-user `DELETE`)
+
+Executed in **FK-safe order** via `frontend/lib/freshStart.ts` (or `backend/agents/trading/core/fresh_start.py` for Lambda reuse):
+
+```
+Tier 1 — Trading & recommendations
+  trading_floor_intelligence
+  trading_recommendations        (P1.5)
+  simulated_trades
+  agent_positions
+  trading_daily_pnl
+  trading_events
+  scout_candidates
+  rl_weights
+  trading_simulations
+
+Tier 2 — Portfolio & research
+  portfolio_digests
+  portfolios
+  research_vectors               (user_id scoped)
+  research_snapshots
+  portfolio research queue refs  (if any per-user rows)
+
+Tier 3 — Chat & session memory
+  rag_attributions
+  session_metadata
+  chat_sessions
+  query_latency_metrics          (user_id scoped)
+
+Tier 4 — User preferences (optional — confirm in UI)
+  user_trading_config
+  preferences
+```
+
+### What is NEVER cleared
+
+| Scope | Tables / data | Reason |
+|-------|---------------|--------|
+| **Global platform** | `ops_snapshots`, `cost_snapshots`, `cost_alerts`, `ragas_evaluations`, `knowledge_graph_*` | Shared infra / eval data |
+| **User identity** | `users` row (Clerk `clerk_id` mapping) | User stays logged in |
+| **Global agent metrics** | `agent_performance` (no `user_id`), `agent_observations` (optional retain for ops) | Platform observability |
+| **Other users** | All rows where `user_id ≠ current user` | Multi-tenant safety |
+
+> **DDL is not dropped.** `scripts/aurora_warmup.py` only ensures tables exist (`CREATE IF NOT EXISTS`). Fresh Start runs **`DELETE … WHERE user_id = …`** — schema stays intact for the next session.
+
+### End-to-end flow
+
+```
+User taps "Fresh Start" on /trading or /dashboard
+        │
+        ▼
+Confirmation modal (two-step):
+  ① Checkbox: "I understand this deletes portfolio, chat, and simulation data"
+  ② Type FRESH START to confirm
+        │
+        ▼
+POST /api/account/fresh-start  { confirm: true, phrase: "FRESH START" }
+        │
+        ▼
+fresh_start_wipe_user(clerk_id)
+  → DELETE all tiers in FK order (single transaction where Aurora supports)
+  → INSERT trading_events: event_type = 'fresh_start_completed'
+        │
+        ▼
+Frontend clears local state:
+  • Redirect to /dashboard (empty widgets)
+  • Alex chat session cleared (new session_id)
+  • Trading page shows zero trades / positions
+  • Portfolio page empty — "Add your first holding"
+```
+
+### UI specification
+
+**`/trading` header** (alongside existing Reset Context):
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│ Trading ON/OFF  ☐ Fresh context on enable  ↺ Reset Context       │
+│                                                                  │
+│ [ ⚠ Fresh Start ]  ← destructive, amber/red outline button      │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+**`/dashboard` settings strip** (collapsible "Developer / Testing"):
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│ Testing                                                          │
+│ Reset debate context only     [↺ Reset Context →]                │
+│ Wipe all my data (new user)   [⚠ Fresh Start →]                  │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+| UI rule | Implementation |
+|---------|----------------|
+| Destructive styling | Amber/red button, never primary indigo |
+| Two-step confirm | Modal + type `FRESH START` |
+| Post-wipe UX | Toast: "Account reset — add holdings to begin" |
+| Disable during wipe | Button shows spinner; block double-submit |
+| Clerk session | User remains authenticated; only Aurora data wiped |
+
+### API
+
+| Route | Method | Body | Response |
+|-------|--------|------|----------|
+| `/api/account/fresh-start` | POST | `{ confirm: true, phrase: "FRESH START" }` | `{ success, tables_cleared: string[], rows_deleted: number }` |
+| `/api/account/fresh-start` | GET | — | `{ available: true, warning: string }` (optional pre-flight copy) |
+
+Auth: Clerk `userId` required. No global/admin wipe from this endpoint (separate `scripts/admin_fresh_start.sh` for dev-only full DB if ever needed).
+
+### Backend module
+
+**File:** `frontend/lib/freshStart.ts` (Next.js API) + optional mirror `backend/agents/trading/core/fresh_start.py`
+
+```python
+USER_SCOPED_TABLES = [
+    # order matters — children before parents
+    "trading_floor_intelligence", "trading_recommendations",
+    "simulated_trades", "agent_positions", "trading_daily_pnl",
+    "trading_events", "scout_candidates", "rl_weights",
+    "trading_simulations",
+    "portfolio_digests", "portfolios",
+    "research_vectors", "research_snapshots",
+    "rag_attributions", "session_metadata", "chat_sessions",
+    "query_latency_metrics",
+    "user_trading_config", "preferences",
+]
+
+def wipe_user_data(clerk_id: str) -> dict:
+    uid_subquery = "(SELECT id FROM users WHERE clerk_id = :uid)"
+    for table in USER_SCOPED_TABLES:
+        execute(f"DELETE FROM {table} WHERE user_id = {uid_subquery}")
+    return {"tables_cleared": USER_SCOPED_TABLES, ...}
+```
+
+**Extend** existing `resetTradingDebateContext()` in `frontend/lib/tradingDb.ts` to call shared tier-1 list only — avoid duplicating table names (single `TRADING_CONTEXT_TABLES` constant).
+
+### Observability
+
+Log to `trading_events`:
+
+```json
+{
+  "event_type": "fresh_start_completed",
+  "payload": {
+    "tables_cleared": 18,
+    "rows_deleted": 142,
+    "trigger": "dashboard" | "trading"
+  }
+}
+```
+
+`/observe` panel (optional P7): fresh starts per week (should be rare in production).
+
+### Guardrails
+
+| Risk | Mitigation |
+|------|------------|
+| Accidental wipe | Type-to-confirm `FRESH START`; checkbox acknowledgment |
+| Cross-user data leak | Every `DELETE` uses `user_id = (SELECT id FROM users WHERE clerk_id = :uid)` |
+| Partial wipe / FK error | Fixed delete order; wrap in try/except per table with rollback log |
+| User thinks portfolio is real money | Modal copy: "Removes tracked holdings — not brokerage accounts" |
+| Production abuse | Rate limit: max 3 fresh starts per user per day (SSM or `trading_events` count) |
+
+### Deliverables (P0.6)
+
+- `frontend/lib/freshStart.ts` — `wipeUserData(clerkId)`
+- `frontend/app/api/account/fresh-start/route.ts`
+- `frontend/components/FreshStartModal.tsx` — shared confirm UI
+- Wire button on `/trading/page.tsx` and `/dashboard/page.tsx`
+- Refactor `frontend/lib/tradingDb.ts` — export shared `TRADING_CONTEXT_TABLES`
+- `scripts/tests/test_fresh_start.py` — unit test table order + mock SQL
+- Document in `scripts/TEST_PLAYBOOK.md`
+
+**Effort:** 1–2 days  
+**Depends on:** P0 schema (tables exist); can ship alongside ✅ debate context reset
 
 ---
 
@@ -297,6 +511,229 @@ CREATE TABLE IF NOT EXISTS trading_events (
 ```
 
 **Bug fix:** Remove `MessageGroupId` from orchestrator SQS send (standard queue, not FIFO).
+
+---
+
+## Phase 1.5 — Dashboard Recommendation Approval (Human-in-the-Loop)
+
+**Goal:** After each debate cycle, surface **actionable recommendations** on the user's dashboard for holdings in their real portfolio. The user reviews a **rationale built from debate context** (agent votes, executor synthesis, portfolio snapshot, digests) and explicitly **approves or dismisses**. Only on approval does Alex update the real `portfolios` table — tagged as a **Trading Floor recommendation**, never silent auto-trades.
+
+### Design principle
+
+| Layer | What changes | User control |
+|-------|----------------|--------------|
+| **Paper simulation** (`agent_positions`, `simulated_trades`) | Updates immediately per Phase 1 executor | Watch-only; "PAPER TRADING SIMULATION" |
+| **Real portfolio** (`portfolios`) | **Only** after user taps **Approve** | Required explicit acceptance |
+
+HOLD debates do not create dashboard recommendations. BUY, SELL, and TRIM do.
+
+### End-to-end flow
+
+```
+debate_engine.run_debate(ticker)
+        │
+        ├── trade_executor → simulated_trades + agent_positions (paper)
+        │
+        └── recommendation_builder.create_pending()
+                │
+                ▼
+        trading_recommendations (status = pending)
+                │
+        ┌───────┴────────┐
+        ▼                ▼
+   /dashboard      GET /api/trading/recommendations
+   "Trading Floor   (pending cards with rationale)
+    Recommendations"
+        │
+   User reviews:
+   • ticker + action + confidence
+   • holding context (shares, cost basis, weight %)
+   • executor rationale + agent vote summary
+   • link to full debate on /trading
+        │
+   ┌────┴────┐
+   ▼         ▼
+ Approve   Dismiss
+   │         │
+   ▼         └── status = dismissed
+portfolio_applier.apply()
+   │
+   ├── UPSERT portfolios (shares, purchase_price)
+   ├── SET source = 'trading_floor_recommendation'
+   ├── SET notes = "Approved YYYY-MM-DD · {action} · conf {n}%"
+   └── INSERT trading_events event_type = 'recommendation_approved'
+```
+
+### Rationale composition
+
+**File:** `backend/agents/trading/core/recommendation_builder.py`
+
+Each pending recommendation stores a structured rationale derived from debate context and the user's **current real holding** (not simulation):
+
+```python
+def build_recommendation_rationale(
+    ticker: str,
+    action: str,
+    confidence: float,
+    holding: dict,           # from portfolios — shares, purchase_price, weight
+    agent_debate: list,      # from simulated_trades.agent_debate
+    executor_rationale: str,
+    portfolio_summary: dict, # total value, position count
+    digest_snippet: str | None = None,  # from portfolio_digests
+) -> dict:
+    return {
+        "headline": f"{action} {ticker} — {confidence:.0f}% confidence",
+        "executor_summary": executor_rationale,
+        "holding_context": {
+            "shares": holding.get("shares"),
+            "avg_cost": holding.get("purchase_price"),
+            "weight_pct": holding.get("weight_pct"),
+            "current_value": holding.get("market_value"),
+        },
+        "portfolio_context": {
+            "total_positions": portfolio_summary.get("position_count"),
+            "total_market_value": portfolio_summary.get("total_market_value"),
+        },
+        "agent_consensus": [
+            {"agent": v["agent"], "action": v["action"], "confidence": v["confidence"],
+             "opening": v.get("opening_statement", "")[:120]}
+            for v in agent_debate
+        ],
+        "research_snippet": digest_snippet,
+        "disclaimer": "Paper simulation result — not financial advice. Approve to reflect in your tracked portfolio.",
+    }
+```
+
+Displayed on dashboard as a readable card; full `agent_debate` JSON linked to `/trading` trade detail.
+
+### Aurora schema (new)
+
+Add to `scripts/aurora_warmup.py`:
+
+```sql
+CREATE TABLE IF NOT EXISTS trading_recommendations (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  user_id UUID REFERENCES users(id) NOT NULL,
+  simulation_id UUID REFERENCES trading_simulations(id),
+  simulated_trade_id UUID REFERENCES simulated_trades(id),
+  ticker VARCHAR(10) NOT NULL,
+  action VARCHAR(10) NOT NULL,           -- BUY | SELL | TRIM (not HOLD)
+  shares INTEGER DEFAULT 0,
+  price NUMERIC(10,2) DEFAULT 0,
+  total_value NUMERIC(12,2) DEFAULT 0,
+  confidence NUMERIC(5,2) DEFAULT 0,
+  status VARCHAR(20) DEFAULT 'pending', -- pending | approved | dismissed | expired
+  rationale JSONB NOT NULL DEFAULT '{}',
+  agent_debate JSONB DEFAULT '[]',
+  portfolio_snapshot JSONB DEFAULT '{}', -- holding state at recommendation time
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  resolved_at TIMESTAMPTZ,
+  expires_at TIMESTAMPTZ                  -- optional: auto-expire after 7 days
+);
+
+CREATE INDEX IF NOT EXISTS tr_user_status_idx
+  ON trading_recommendations (user_id, status, created_at DESC);
+
+-- Tag real portfolio rows applied from Trading Floor
+ALTER TABLE portfolios ADD COLUMN IF NOT EXISTS source VARCHAR(30) DEFAULT 'user';
+ALTER TABLE portfolios ADD COLUMN IF NOT EXISTS recommendation_id UUID REFERENCES trading_recommendations(id);
+```
+
+| Column | Purpose |
+|--------|---------|
+| `trading_recommendations.status` | Workflow state; dashboard queries `pending` only |
+| `simulated_trade_id` | Audit link back to paper trade + debate JSON |
+| `portfolio_snapshot` | Frozen holding at recommendation time for rationale display |
+| `portfolios.source` | `'user'` (manual entry) vs `'trading_floor_recommendation'` (approved) |
+| `portfolios.recommendation_id` | Traceability to the approved recommendation |
+
+**Reset debate context** (`POST /api/trading/reset`) should set related pending recommendations to `expired` (not delete — preserves audit trail).
+
+### Portfolio apply rules (on approve)
+
+**File:** `backend/agents/trading/core/portfolio_applier.py`
+
+| Action | Real `portfolios` update |
+|--------|-------------------------|
+| **BUY** | Upsert ticker: increase `shares`, weighted-average `purchase_price`, `source = trading_floor_recommendation` |
+| **SELL** | Reduce shares to 0 (or remove row if fully liquidated) |
+| **TRIM** | Reduce shares by recommendation amount (25% of simulated trim) |
+
+Never apply if:
+- User has no Clerk session / wrong `user_id`
+- Recommendation already `approved` or `dismissed`
+- Ticker not in portfolio and action is SELL/TRIM (guard: block or require scout flow in v2)
+
+Emit `trading_events` row: `event_type = 'recommendation_approved' | 'recommendation_dismissed'`.
+
+### Dashboard UI
+
+**Location:** `frontend/app/dashboard/page.tsx` — new section **"Trading Floor Recommendations"** (below Quick Actions or above Portfolio Research).
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  Trading Floor Recommendations                    [View all → /trading] │
+├─────────────────────────────────────────────────────────────────────┤
+│  NVDA · BUY · 82% confidence                          2h ago          │
+│  You hold 12 shares @ $118.40 (18.2% of portfolio)                  │
+│  Executor: "5-agent consensus BUY — Marcus/Zara bullish, Elena       │
+│  approves size. Target $145, stop $108."                             │
+│  Marcus BUY 85% · Victoria SELL 40% · Zara BUY 78% · …              │
+│                                                                     │
+│  [Dismiss]                              [Approve → Update Portfolio]  │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+| UI element | Behavior |
+|------------|----------|
+| Pending count badge | Dashboard greeting or quick-action tile: "3 recommendations" |
+| Approve button | `POST /api/trading/recommendations/{id}/approve` → refresh portfolio + mark approved |
+| Dismiss button | `POST /api/trading/recommendations/{id}/dismiss` → no portfolio change |
+| Portfolio tag | Approved holdings show badge **Trading Floor** on `/portfolio` |
+| Empty state | "No pending recommendations — Run Analysis on Trading Floor" |
+
+### API routes (new)
+
+| Route | Method | Purpose |
+|-------|--------|---------|
+| `/api/trading/recommendations` | GET | List pending (+ optional `?status=approved` history) for dashboard |
+| `/api/trading/recommendations/[id]/approve` | POST | Apply to `portfolios`, tag source, set `resolved_at` |
+| `/api/trading/recommendations/[id]/dismiss` | POST | Mark dismissed, no portfolio write |
+
+Extend `GET /api/trading` to include `pending_recommendations_count` for dashboard polling.
+
+### Integration with existing phases
+
+| Phase | Relationship |
+|-------|----------------|
+| **P1 Paper executor** | Creates `simulated_trades` that `recommendation_builder` reads |
+| **P3 Context bridge** | `portfolio_digests` + `research_vectors` enrich rationale JSON |
+| **P6 RL** | Approved recommendations can later feed outcome evaluator ("did user adopt winning trades?") |
+| **P7 Observability** | Panel: recommendations pending vs approved rate, time-to-approve |
+
+### Guardrails
+
+| Rule | Implementation |
+|------|----------------|
+| No auto-apply to real portfolio | `portfolio_applier` only called from approve API |
+| Clear simulation vs real distinction | Dashboard card disclaimer + portfolio `source` badge |
+| Idempotent approve | Second approve on same `id` returns 409 |
+| Audit trail | `trading_recommendations` + `trading_events` + `recommendation_id` on portfolio row |
+| Expiry | Optional `expires_at`; cron or dashboard hides stale pending recs |
+
+### Deliverables (P1.5)
+
+- `backend/agents/trading/core/recommendation_builder.py`
+- `backend/agents/trading/core/portfolio_applier.py`
+- Wire into `debate_engine.py` after `store_trade()` for non-HOLD actions
+- `frontend/app/api/trading/recommendations/route.ts`
+- `frontend/app/api/trading/recommendations/[id]/approve/route.ts`
+- `frontend/app/api/trading/recommendations/[id]/dismiss/route.ts`
+- `frontend/components/TradingRecommendations.tsx` (dashboard widget)
+- `scripts/aurora_warmup.py` — `trading_recommendations` + `portfolios.source` columns
+
+**Effort:** 2–3 days  
+**Depends on:** P1 (paper executor + `simulated_trades` with debate JSON)
 
 ---
 
@@ -580,21 +1017,25 @@ If outcomes are positive:
 
 ### 6.1 New Observability Panels
 
-| Panel | Data Shown | Aurora Source |
-|-------|-----------|---------------|
-| **Simulation Health** | Active simulations, total virtual AUM, avg return % | `trading_simulations` |
-| **Daily P&L Chart** | 7-day simulated P&L trend line | `trading_daily_pnl` |
-| **Agent Accuracy Leaderboard** | Per-agent win rate, avg P&L attribution, trend arrow | `agent_performance` |
-| **RL Weights Chart** | How agent trust weights evolved over 30 days | `rl_weights` |
-| **Scout Activity** | Candidates discovered, debated, traded conversion rate | `scout_candidates` + `simulated_trades` |
-| **Debate Schedule** | Last run time, next scheduled run, interval per user | `user_trading_config` + EventBridge |
-| **MCP Tool Usage** | Tools called, avg latency, error rate | `agent_observations.data_used` |
-| **Sentinel Triggers** | Auto stop-loss / take-profit events today | `simulated_trades WHERE trigger='sentinel'` |
-| **Trade Replay Feed** | Live stream of latest 20 simulation trades | `simulated_trades ORDER BY executed_at DESC` |
-| **Cost per Trade** | Bedrock $/trade, tokens/trade | `agent_observations` aggregated |
-| **Guardrail Log** | (existing) Last 10 guardrail hits | `agent_observations` |
-| **Platform Cost** | (existing) 7-day total cost, tokens, calls | `agent_observations` |
-| **Per-Agent Stats** | (existing) Cost, latency, action distribution | `agent_observations` |
+| Panel | Data Shown | Aurora Source | Tags (via Tagger) |
+|-------|-----------|---------------|-------------------|
+| **Simulation Health** | Active simulations, total virtual AUM, avg return % | `trading_simulations` | `domain:trading`, `layer:simulation` |
+| **Daily P&L Chart** | 7-day simulated P&L trend line | `trading_daily_pnl` | `domain:trading`, `layer:data` |
+| **Agent Accuracy Leaderboard** | Per-agent win rate, avg P&L attribution, trend arrow | `agent_performance` | `domain:trading`, `layer:agent` |
+| **RL Weights Chart** | How agent trust weights evolved over 30 days | `rl_weights` | `domain:trading`, `layer:learning` |
+| **Scout Activity** | Candidates discovered, debated, traded conversion rate | `scout_candidates` + `simulated_trades` | `domain:trading`, `agent:scout` |
+| **Debate Schedule** | Last run time, next scheduled run, interval per user | `user_trading_config` + EventBridge | `domain:trading`, `layer:schedule` |
+| **MCP Tool Usage** | Tools called, avg latency, error rate | `agent_observations.data_used` | `layer:mcp`, `source:{server}` |
+| **Data Source Health** | Per-API pass/fail, latency, tier | `query_latency_metrics.data_sources` | `layer:data`, `tier:{1\|2\|3}`, `source:{api}` |
+| **System Action Log** | Portfolio updates, rec approvals, fresh starts | `trading_events` + `tool_invocations` | `layer:action`, `action:{name}` |
+| **Tag Explorer** | Filter all events by tag prefix / agent / source | `event_tags` + `tool_invocations` | All tag dimensions |
+| **Sentinel Triggers** | Auto stop-loss / take-profit events today | `simulated_trades WHERE trigger='sentinel'` | `agent:sentinel`, `action:trim\|sell` |
+| **Trade Replay Feed** | Live stream of latest 20 simulation trades | `simulated_trades ORDER BY executed_at DESC` | `domain:trading`, `layer:execution` |
+| **Recommendation Queue** | Pending / approved / dismissed recs | `trading_recommendations` | `layer:action`, `action:recommendation` |
+| **Cost per Trade** | Bedrock $/trade, tokens/trade | `agent_observations` aggregated | `layer:agent`, `domain:trading` |
+| **Guardrail Log** | (existing) Last 10 guardrail hits | `agent_observations` | `layer:guardrail` |
+| **Platform Cost** | (existing) 7-day total cost, tokens, calls | `agent_observations` | `domain:platform` |
+| **Per-Agent Stats** | (existing) Cost, latency, action distribution | `agent_observations` | `agent:{name}` |
 
 ### 6.2 Unified Event Timeline
 
@@ -652,21 +1093,26 @@ Extend `frontend/app/api/observe/route.ts` to return:
 
 | Page | Changes |
 |------|---------|
-| **`/trading`** | New Simulation tab with replay mode; Agent Settings panel (interval, mode, scout, risk limits); Scout candidates panel; RL weight badge on each agent card; "PAPER TRADING SIMULATION" banner |
-| **`/observe`** | All new panels from Phase 6; debate event timeline; P&L charts; accuracy leaderboard; RL weights evolution chart |
-| **`/portfolio`** | Link to Trading Floor; show latest agent recommendation badge per holding (BUY/SELL/HOLD from last debate) |
-| **`/dashboard`** | Trading simulation summary card: virtual P&L, last debate time, top agent this week |
+| **`/trading`** | Simulation tab; Agent Settings; Scout panel; RL badge; **Reset Debate Context** (✅); **Fresh Start** toggle (P0.6); "PAPER TRADING SIMULATION" banner |
+| **`/observe`** | All Phase 6 panels; **Tag Explorer**, **Data Source Map**, **Tool Invocation Log**; tag filter bar (P5.5) |
+| **`/portfolio`** | Link to Trading Floor; agent badge; `trading_floor_recommendation` source tag |
+| **`/dashboard`** | Trading Floor Recommendations widget (P1.5); simulation summary; **Testing strip** with Fresh Start + Reset Context |
 | **`Navbar`** | Add Trading Floor + Observability links |
 
 ### New API Routes
 
 | Route | Method | Purpose |
 |-------|--------|---------|
+| `/api/trading/reset` | POST | Reset debate context only (✅ implemented) |
+| `/api/account/fresh-start` | POST | Wipe all user-scoped Aurora rows — new-user state (P0.6) |
+| `/api/trading/recommendations` | GET | Pending + history recommendations for dashboard |
+| `/api/trading/recommendations/[id]/approve` | POST | User accepts → apply to `portfolios` with `trading_floor_recommendation` tag |
+| `/api/trading/recommendations/[id]/dismiss` | POST | User rejects → no portfolio change |
 | `/api/trading/config` | GET, POST | Per-user trading settings (user_trading_config) |
 | `/api/trading/simulation` | GET | Virtual portfolio state, holdings, cash, replay data |
 | `/api/trading/scout` | GET | Scout candidates for user |
 | `/api/trading/performance` | GET | Agent accuracy + RL weights |
-| `/api/observe` | GET (extend) | All simulation, P&L, RL, scout, events data |
+| `/observe` | GET (extend) | All simulation, P&L, RL, scout, events, **tag explorer**, data source map |
 
 ### Agent Settings UI Mockup
 
@@ -748,33 +1194,40 @@ Add all new tables and schema fixes from Phase 1.4.
 | Phase | Scope | Effort | Depends On |
 |-------|-------|--------|------------|
 | **P0 — Fixes** | Schema fixes, FIFO bug, `agent_observations` warmup, `simulated_trades` columns | 2–3 days | — |
+| **P0.6 — Fresh Start** | Full user wipe toggle, type-to-confirm, dashboard + trading UI | 1–2 days | P0 |
 | **P1 — Simulation** | Paper trade executor, position manager, simulation UI, P&L tracking | 3–4 days | P0 |
+| **P1.5 — Recommendations** | Dashboard pending recs, approve/dismiss, `portfolios` apply + source tag | 2–3 days | P1 |
 | **P2 — Autonomy** | `user_trading_config` UI + API, EventBridge schedule, debate interval config | 2–3 days | P1 |
 | **P3 — Intelligence** | Research bridge, Historian context, `context_builder.py` | 2–3 days | P1 |
 | **P4 — Scout** | Scout agent, `scout_candidates`, scout UI panel | 3–4 days | P2, P3 |
-| **P5 — MCP** | Playwright for Scout, News MCP, tool observability | 4–5 days | P4 |
+| **P5 — MCP** | Playwright for Scout, News MCP, tool observability, **tools-only refactor** | 4–5 days | P4 |
+| **P5.5 — Tagger** | Tagger agent, `event_tags` table, observe tag panels | 2 days | P5, P6 |
 | **P6 — RL Loop** | Trade evaluator Lambda, weight updater, accuracy leaderboard | 3–4 days | P1 |
 | **P7 — Observability** | Full `/observe` expansion, `trading_events`, observer deploy | 3–4 days | P1–P6 |
 | **P8 — Sentinel** | Hourly stop-loss monitor, auto TRIM/SELL | 2 days | P1, P2 |
 
 **Total estimate:** ~4–5 weeks for the full plan.  
-**MVP estimate:** ~1.5 weeks (P0 + P1 + P2 + minimal P7).
+**MVP estimate:** ~2 weeks (P0 + P1 + **P1.5** + P2 + minimal P7).
 
 ---
 
 ## MVP Recommendation
 
-Fastest path to *"agents autonomously trading a simulation the user can watch"*:
+Fastest path to *"agents autonomously trading a simulation the user can watch, with optional adoption into their tracked portfolio"*:
 
-### MVP = P0 + P1 + P2 + minimal P7
+### MVP = P0 + P1 + P1.5 + P2 + minimal P7
 
 **Delivers:**
 - ✅ Virtual account seeded from real portfolio value
 - ✅ Agents actually BUY/SELL/TRIM in simulation (positions update)
+- ✅ **Dashboard recommendations with debate rationale — user approves before real portfolio changes**
+- ✅ Approved holdings tagged **`trading_floor_recommendation`** on `/portfolio`
 - ✅ User configures 2h / 3h debate interval from frontend
-- ✅ Simulation replay on `/trading`
+- ✅ Simulation replay on `/trading`; **Reset Debate Context** for testing (✅ implemented)
 - ✅ Basic P&L + trade count on `/observe`
 - ✅ Schema fixes and FIFO bug resolved
+- ✅ **Reset Debate Context** for trading-only test runs (implemented)
+- 🔲 **Fresh Start** toggle for full new-user state (P0.6)
 
 **Defers to v2:**
 - Scout agent (buying non-portfolio stocks)
@@ -794,10 +1247,16 @@ Fastest path to *"agents autonomously trading a simulation the user can watch"*:
 | Scout buys bad stocks | Score threshold ≥70; Elena veto; max 2 new positions/week; user opt-in only |
 | MCP latency blows Lambda timeout | Pre-fetch context in `context_builder`; MCP only on Scout (not all 5 debate agents) |
 | RL overfits to recent noise | 30-day rolling window; minimum 10 votes before weight changes; max weight swing ±50% |
-| User confuses simulation with real money | Persistent "PAPER TRADING SIMULATION" banner on `/trading` and `/observe` |
+| User confuses simulation with real money | Persistent "PAPER TRADING SIMULATION" banner on `/trading` and `/observe`; dashboard approve step before any real `portfolios` write |
+| User approves recommendation without reading rationale | Require explicit Approve tap; show holding context + agent summary; disclaimer on every card |
+| Stale pending recommendations after reset | `POST /api/trading/reset` expires open `trading_recommendations` for that user |
+| Accidental full data wipe | Fresh Start requires type `FRESH START` + checkbox; rate limit 3/day per user |
+| Fresh Start during active debate | Disable button while `running` analysis; queue drain optional |
 | Aurora cold starts delay trades | Keep existing warmup pattern in orchestrator + debate_agent |
 | Runaway autonomous trading | `max_daily_trades` cap; global SSM kill switch; per-user autonomous toggle |
 | Stale market data | yfinance with fallback; data_quality score in debate result; HOLD if data_quality < 0.5 |
+| Untagged observe events | Hard to filter/debug on `/observe` | Tagger agent (P5.5) labels all tool/MCP/action events into `event_tags` |
+| Direct SQL bypasses audit | Tools-only model (P5); `tool_invocations` required for mutations |
 
 ---
 
@@ -817,6 +1276,12 @@ Before implementation begins, confirm:
 | 8 | **Scheduling model** | Single schedule looping users vs per-user EventBridge | Single schedule for MVP |
 | 9 | **Simulation seed** | Mirror real portfolio exactly vs fixed virtual budget (e.g. $100k) | Mirror real portfolio value |
 | 10 | **Navbar links** | Add Trading + Observe to main nav? | Yes |
+| 11 | **Recommendation adoption** | Auto-apply debate results to real portfolio vs user approve on dashboard? | **Dashboard approve only** (P1.5); simulation never writes `portfolios` directly |
+| 12 | **Recommendation expiry** | Pending recs expire after N days vs stay until dismissed? | 7-day expiry default |
+| 13 | **Fresh Start scope** | Trading tables only vs all user Aurora data? | **All user-scoped tables** (P0.6); never global/platform rows |
+| 14 | **Fresh Start in production** | Dev-only vs available to all users? | Available with strong confirm; rate-limited |
+| 15 | **Tools-only actions** | Gradual refactor vs big-bang before P1? | New code tools-only; refactor orchestrator in P5 |
+| 16 | **Tagger placement** | Inline per event vs async batch? | Async after tool call (Nova Lite); batch for observe rollup |
 
 ---
 
@@ -830,6 +1295,8 @@ frontend/app/observe/page.tsx
 frontend/app/api/trading/route.ts
 frontend/app/api/trading/run/route.ts
 frontend/app/api/trading/toggle/route.ts
+frontend/app/api/trading/reset/route.ts          # ✅ debate context reset (testing)
+frontend/app/api/account/fresh-start/route.ts    # P0.6 — full user wipe
 frontend/app/api/observe/route.ts
 frontend/app/api/portfolio/route.ts
 
@@ -853,6 +1320,8 @@ scripts/start_session.sh
 
 ```
 backend/agents/trading/core/trade_executor.py       # Paper trade execution
+backend/agents/trading/core/recommendation_builder.py  # P1.5 — pending dashboard recs
+backend/agents/trading/core/portfolio_applier.py      # P1.5 — apply approved rec to portfolios
 backend/agents/trading/core/context_builder.py      # Rich debate context
 backend/agents/trading/agents/scout.py              # Market scout agent
 backend/agents/trading/agents/sentinel.py           # Stop-loss monitor
@@ -862,12 +1331,256 @@ backend/agents/trading/learning/weight_updater.py   # RL weight updates
 backend/agents/trading/mcp/market_mcp.py            # Market data MCP wrapper
 backend/agents/trading/mcp/news_mcp.py              # News search MCP
 backend/agents/trading/mcp/portfolio_mcp.py         # Portfolio context MCP
+backend/agents/trading/mcp/tool_gateway.py          # P5 — tools-only gateway
+backend/agents/trading/agents/tagger.py             # P5.5 — observability tagger
+backend/agents/trading/core/tagger_pipeline.py      # P5.5 — post-tool labeling
+backend/researcher/mcp/mcp_gateway.py               # Research MCP router
+backend/researcher/mcp/quant/quant_gateway.py       # P13 quant router
 
 frontend/app/api/trading/config/route.ts
+frontend/app/api/trading/recommendations/route.ts
+frontend/app/api/trading/recommendations/[id]/approve/route.ts
+frontend/app/api/trading/recommendations/[id]/dismiss/route.ts
 frontend/app/api/trading/simulation/route.ts
+frontend/components/TradingRecommendations.tsx    # Dashboard widget (P1.5)
+frontend/components/FreshStartModal.tsx           # P0.6 — type-to-confirm wipe
+frontend/lib/tradingDb.ts                         # ✅ reset debate context helper
+frontend/lib/freshStart.ts                        # P0.6 — wipe all user-scoped tables
+frontend/components/ObserveTagPills.tsx           # P5.5 — observe filter pills
 frontend/app/api/trading/scout/route.ts
 frontend/app/api/trading/performance/route.ts
 ```
+
+---
+
+## Data Source & MCP Registry
+
+**Goal:** Single canonical map of **every external API**, **MCP server**, and **internal data store** used across Alex Research, Trading Floor, and the Quant layer — who consumes what, cost tier, and observability tag prefix.
+
+### Registry overview
+
+```
+                    ┌─────────────────────────────────────┐
+                    │         DATA & MCP GATEWAY          │
+                    │  mcp_gateway / quant_gateway        │
+                    │  trading/mcp/tool_gateway.py        │
+                    └──────────────┬──────────────────────┘
+           ┌───────────────────────┼───────────────────────┐
+           ▼                       ▼                       ▼
+    Tier 1 APIs (free)      Tier 2 APIs (paid)      Internal stores
+    yfinance, FRED,         Polygon, Finnhub,       Aurora, SageMaker
+    Fear&Greed, EDGAR       Alpha Vantage,          embeddings, S3
+                            Unusual Whales
+           │                       │                       │
+           └───────────────────────┴───────────────────────┘
+                                   │
+              ┌────────────────────┼────────────────────┐
+              ▼                    ▼                    ▼
+        Alex Researcher      Trading Floor 6       Portfolio Reporter
+        (fast/deep/chat)     (debate agents)       (2h digests)
+```
+
+### Tier 1 — Live today (free / low cost)
+
+| Data Source | Access | Wrapper today | MCP (target) | Key tools | Consumers | Observe tag |
+|-------------|--------|---------------|--------------|-----------|-----------|-------------|
+| **Yahoo Finance** | `yfinance` | `tools.py`, `market_data.py` | `market_price_mcp` | `get_quote`, `get_ohlcv`, `get_fundamentals` | Marcus, Zara, Fast Alex, Scout | `data:yfinance`, `tier:1` |
+| **Yahoo Finance RSS** | HTTP | `tools.py` | `financial_news_mcp` | `get_headlines` | Deep Alex, Marcus | `data:yahoo_rss`, `tier:1` |
+| **CNN Fear & Greed** | HTTP scrape | `market_data.fetch_fear_greed` | `sentiment_mcp` | `get_fear_greed_index` | Reid, Elena | `data:fear_greed`, `tier:1` |
+| **SEC EDGAR** | `edgartools` | `tools.py` | `sec_edgar_mcp` | `get_filings`, `get_insider_trades` | Deep Alex, Victoria | `data:sec_edgar`, `mcp:sec`, `tier:1` |
+| **Playwright MCP** | `@playwright/mcp` | `mcp_servers.py` | `playwright_mcp` | `browse`, `snapshot` | Deep Alex, Scout (planned) | `mcp:playwright`, `tier:1` |
+| **pandas-ta / numpy** | Local compute | `market_data.py` (partial) | `technical_mcp` | `calc_rsi`, `calc_macd`, `detect_support_resistance` | Zara | `data:computed`, `tier:1` |
+| **Aurora PostgreSQL** | RDS Data API | `context_service`, orchestrator | `aurora_tool.*` | `read_portfolio`, `read_digests`, `search_vectors` | All agents | `data:aurora`, `tier:1` |
+| **SageMaker Embeddings** | `alex-embedding` | `context_service.embed_text` | `embedding_tool` | `embed`, `batch_embed` | RAG, P14 ingest | `data:sagemaker`, `tier:1` |
+| **Amazon Bedrock** | `bedrock-runtime` | All `invoke()` | — | `invoke_model` | All LLM agents | `model:bedrock` |
+
+### Tier 2 — Configured / planned (paid)
+
+| Data Source | Wrapper today | MCP (target) | Consumers | Observe tag |
+|-------------|---------------|--------------|-----------|-------------|
+| **Polygon.io** | `market_data.fetch_polygon` | `polygon_mcp` | Zara, Scout | `data:polygon`, `tier:2` |
+| **Alpha Vantage** | `market_data.fetch_alpha_vantage` | `alpha_vantage_mcp` | Zara, Reid | `data:alpha_vantage`, `tier:2` |
+| **Finnhub** | — | `finnhub_mcp` | Marcus, Fast Alex | `data:finnhub`, `tier:2` |
+| **FRED** | — | `macro_mcp` / `fred_mcp` | Reid, Elena | `data:fred`, `tier:2` |
+| **NewsAPI / Benzinga** | — | `financial_news_mcp` | Marcus, Victoria | `data:newsapi`, `tier:2` |
+
+### Tier 3 — Differentiation
+
+| Data Source | MCP (target) | Consumers | Observe tag |
+|-------------|--------------|-----------|-------------|
+| **Unusual Whales** | `options_flow_mcp` | Zara, Scout | `data:unusual_whales`, `tier:3` |
+| **CBOE / VIX** | `volatility_mcp` | Elena, Zara | `data:cboe`, `tier:3` |
+| **Chart render → S3** | `chart_mcp` | Alex UI, Zara | `mcp:chart`, `tier:3` |
+| **Sector ETFs** | `sector_mcp` | Reid, Scout | `data:sector`, `tier:3` |
+
+### MCP server catalog
+
+| MCP Server | Path | Status | Primary agents |
+|------------|------|--------|----------------|
+| `playwright_mcp` | `backend/researcher/mcp_servers.py` | ✅ Live | Deep Alex, Scout |
+| `sec_edgar_mcp` | `backend/researcher/mcp/sec_edgar_mcp.py` | 🔲 Planned | Victoria, Deep Alex |
+| `financial_news_mcp` | `backend/researcher/mcp/financial_news_mcp.py` | 🔲 Planned | Marcus, Victoria |
+| `market_price_mcp` | `backend/researcher/mcp/quant/market_price_mcp.py` | 🔲 P13 | Zara, Scout |
+| `technical_mcp` | `backend/researcher/mcp/quant/technical_mcp.py` | 🔲 P13 | Zara |
+| `macro_mcp` | `backend/researcher/mcp/quant/macro_mcp.py` | 🔲 P13 | Reid, Elena |
+| `options_flow_mcp` | `backend/researcher/mcp/quant/options_flow_mcp.py` | 🔲 P13 | Zara |
+| `portfolio_mcp` | `backend/agents/trading/mcp/portfolio_mcp.py` | 🔲 P4 | Executor, Historian |
+| `market_mcp` | `backend/agents/trading/mcp/market_mcp.py` | 🔲 P4 | Zara, Reid |
+| `simulation_mcp` | `backend/agents/trading/mcp/simulation_mcp.py` | 🔲 P5 | Executor, Sentinel |
+| `action_mcp` | `backend/agents/trading/mcp/action_mcp.py` | 🔲 P5 | Executor, API bridge |
+
+### Internal data stores
+
+| Store | Written by | Read by | Tag |
+|-------|-----------|---------|-----|
+| `portfolios` | User UI, `portfolio_tool.apply` | Orchestrator, RAG | `store:portfolios` |
+| `portfolio_digests` | Reporter Lambda | Dashboard, context_builder | `store:digests` |
+| `research_vectors` | Chat/deep ingest | `context_service` | `store:research_vectors` |
+| `trading_floor_intelligence` | debate_ingest (P14) | Historian | `store:tfi` |
+| `quant_snapshots` | quant_gateway (P13) | Zara | `store:quant_snapshots` |
+| `simulated_trades` | `simulation_tool` | Trading UI, recs | `store:simulated_trades` |
+| `trading_recommendations` | `recommendation_tool` | Dashboard | `store:recommendations` |
+| `tool_invocations` | All action tools | `/observe` | `store:tool_log` |
+| `event_tags` | Tagger agent | Tag Explorer | `store:tags` |
+
+---
+
+## Tools-Only Agent Action Model
+
+**Goal:** **No agent or API handler may mutate system state directly.** All portfolio updates, simulation trades, recommendations, config changes, and account wipes go through **registered tools** with schema validation, idempotency keys, audit logging, and Tagger labels.
+
+### Principle
+
+| ❌ Forbidden | ✅ Required |
+|-------------|------------|
+| `rds.execute_statement(INSERT…)` inside `marcus.py` | `tool_gateway.call("simulation_tool.log_trade", …)` |
+| Direct `portfolios` UPDATE in API route | `portfolio_tool.upsert_holding` |
+| Orchestrator inline SQL | `schedule_tool.enqueue_debate` + read tools |
+
+### Tool catalog — read
+
+| Tool | Consumers |
+|------|-----------|
+| `market_tool.get_snapshot` | All debate agents |
+| `digest_tool.get_for_ticker` | context_builder |
+| `vector_tool.search_research` | Historian, Alex |
+| `quant_tool.get_snapshot` | Zara (P13) |
+| `portfolio_tool.get_holdings` | Executor, Orchestrator |
+| `simulation_tool.get_positions` | Executor, Sentinel |
+
+### Tool catalog — action (mutations)
+
+| Tool | Trigger | Observe tag |
+|------|---------|-------------|
+| `simulation_tool.execute_trade` | Post-debate paper trade | `action:simulation:execute` |
+| `simulation_tool.log_trade` | Debate stores trade JSON | `action:simulation:log` |
+| `simulation_tool.reset_context` | Reset Context button | `action:simulation:reset` |
+| `recommendation_tool.create_pending` | Non-HOLD debate | `action:recommendation:create` |
+| `recommendation_tool.approve` | Dashboard approve | `action:recommendation:approve` |
+| `recommendation_tool.dismiss` | Dashboard dismiss | `action:recommendation:dismiss` |
+| `portfolio_tool.upsert_holding` | Approve BUY/TRIM | `action:portfolio:upsert` |
+| `portfolio_tool.remove_holding` | Approve SELL | `action:portfolio:remove` |
+| `account_tool.fresh_start` | Fresh Start toggle | `action:account:fresh_start` |
+| `config_tool.update_trading` | Settings save | `action:config:update` |
+| `schedule_tool.enqueue_debate` | Orchestrator | `action:schedule:enqueue` |
+
+### `tool_invocations` table
+
+```sql
+CREATE TABLE IF NOT EXISTS tool_invocations (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  correlation_id VARCHAR(36),
+  user_id UUID REFERENCES users(id),
+  agent_name VARCHAR(50),
+  tool_name VARCHAR(100) NOT NULL,
+  idempotency_key VARCHAR(36),
+  payload JSONB DEFAULT '{}',
+  result JSONB DEFAULT '{}',
+  success BOOLEAN DEFAULT true,
+  latency_ms INTEGER DEFAULT 0,
+  tags JSONB DEFAULT '[]',
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+```
+
+**Migration:** P1 uses tools for new executor code; P5 refactors orchestrator + debate_engine; P0.6/P1.5 API routes wrap existing logic in tool modules.
+
+---
+
+## Tagger Agent & Tagged Observability
+
+**Goal:** A dedicated **Tagger Agent** (Nova Lite) assigns **all** observability and UI classification tags. Hardcoded tags in frontend are display-only; source of truth is `event_tags` written by Tagger.
+
+### Tagger Agent
+
+| Property | Value |
+|----------|-------|
+| File | `backend/agents/trading/agents/tagger.py` |
+| Model | Nova Lite |
+| Triggers | Post `tool_invocations`; post debate; hourly observe rollup |
+| Does NOT | Trade, recommend, or mutate portfolio |
+
+### Tag schema
+
+```typescript
+interface EventTag {
+  event_id: string
+  event_type: 'tool' | 'debate' | 'recommendation' | 'query' | 'guardrail' | 'data_fetch'
+  tags: string[]           // e.g. ["domain:trading", "action:portfolio:upsert", "tier:1"]
+  dimensions: {
+    domain?:  'trading' | 'research' | 'portfolio' | 'platform' | 'system'
+    layer?:   'data' | 'mcp' | 'tool' | 'agent' | 'action' | 'simulation' | 'guardrail'
+    source?:  string       // yfinance, polygon, playwright
+    agent?:   string
+    action?:  string
+    tier?:    '1' | '2' | '3'
+    ticker?:  string
+    status?:  'success' | 'error'
+  }
+}
+```
+
+```sql
+CREATE TABLE IF NOT EXISTS event_tags (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  event_id VARCHAR(36) NOT NULL,
+  event_type VARCHAR(30) NOT NULL,
+  user_id UUID REFERENCES users(id),
+  tags JSONB DEFAULT '[]',
+  dimensions JSONB DEFAULT '{}',
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS et_tags_gin ON event_tags USING gin (tags);
+```
+
+### `/observe` tag UX (full observability)
+
+| Panel | Tags shown |
+|-------|------------|
+| **Tag filter bar** | Multi-select: `domain:*`, `layer:*`, `action:*`, `source:*` |
+| **Data Source Map** | Live registry § tier health + `tier:1/2/3` pills |
+| **Tool Invocation Log** | Every mutation/read tool with tag pills + latency |
+| **Research queries** | Route + MCP + data source tags per row |
+| **Trading events** | Debate, execute, recommendation, approve tags |
+| **Tag Explorer** | Search `event_tags`; click tag → filter all panels |
+
+**Pill colors** (extend `TagPills.tsx` / `ObserveTagPills.tsx`):
+
+| Prefix | Color |
+|--------|-------|
+| `layer:data` | gray |
+| `layer:mcp` | cyan |
+| `layer:action` / `layer:tool` | amber |
+| `domain:trading` | purple |
+| `rec:*` | green |
+| `action:portfolio:*` | blue |
+| `tier:3` | gold outline |
+
+### API
+
+`GET /api/observe?tags=domain:trading,action:portfolio:*` returns `toolInvocations`, `eventTags`, `dataSourceHealth`, `tagSummary`.
+
+**Deliverables (P5.5):** `tagger.py`, `tagger_pipeline.py`, `event_tags` DDL, `ObserveTagPills.tsx`, observe panel wiring.
 
 ---
 
@@ -888,6 +1601,9 @@ Trading Floor 2.0 adds:
   → Injects into debate agent prompts
   → Scout uses digests to score candidates
   → Historian + RL weights inform agent trust
+  → Recommendation Bridge (P1.5) surfaces debate outcomes on /dashboard
+  → User approves → real portfolios updated (tag: trading_floor_recommendation)
+  → All mutations via tools-only gateway → Tagger labels → /observe
 ```
 
 Both pipelines share:

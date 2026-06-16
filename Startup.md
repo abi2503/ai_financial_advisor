@@ -169,6 +169,8 @@ RIA pays $200–500/mo per advisor seat. Alex runs behind their brand:
 
 **Rationale:** 15,000+ RIAs in the US, each with 50–200 clients. One RIA replacing one junior analyst ($80k/yr) pays for itself 13x over.
 
+**Full product spec:** [`RIA.md`](RIA.md) — Alex architecture leverage, tenancy, compliance, MVP roadmap.
+
 **Target:** 20 RIAs × $300/mo = **$6,000 MRR**
 
 ---

@@ -1,10 +1,10 @@
 # Alex AI — Complete Platform Report (Full Edition)
 
 **Document:** `Alex_report.md`  
-**Date:** June 14, 2026  
+**Date:** June 15, 2026 (authoritative snapshot)  
 **Author:** Platform engineering summary (codebase-derived)  
-**Status:** Production-deployed on AWS; P0 complete; P1 router + unified chat live  
-**Companion docs:** `P0_report.md`, `Alex_AI_2.0.md`, `Alex_Trading_Floor_2.0.md`, `Alex_Master_Implementation_Plan.md`, `Startup.md`, `Ophelia.md`
+**Status:** Code complete for P0 + P1; AWS infra session-dependent (see §34.12)  
+**Companion docs:** `P0_report.md`, `Alex_AI_2.0.md`, `Alex_chat_intelligence.md`, `Alex_Trading_Floor_2.0.md`, `Alex_Master_Implementation_Plan.md`, `Agentic_Usecase.md`, `usecases.md`, `RIA.md`, `DM_apply.md`, `Startup.md`, `Ophelia.md`
 
 ---
 
@@ -42,6 +42,8 @@
 30. [Key Concepts Glossary](#30-key-concepts-glossary)
 31. [File Reference Map](#31-file-reference-map)
 32. [Known Gaps & Technical Debt](#32-known-gaps--technical-debt)
+33. [Change Log & Documentation Policy](#33-change-log--documentation-policy)
+34. [Current Application State — Authoritative Snapshot (June 15, 2026)](#34-current-application-state--authoritative-snapshot-june-15-2026)
 
 ---
 
@@ -49,29 +51,41 @@
 
 **Alex** is a production-grade, multi-agent AI financial intelligence platform deployed on AWS. It is **not** a brokerage, robo-advisor, or ChatGPT skin. It is an **AI-native financial intelligence layer** that sits on top of a user's portfolio.
 
-### What is built today
+### What is built today (code shipped)
 
 | Layer | Capability | Status |
 |-------|------------|--------|
-| **Brain** | Unified chat with auto-routing (Chat / Fast / Deep / Debater / Parallel) | ✅ Live |
-| **Research** | Fast (yfinance), Deep (SEC + Playwright MCP), Multi-agent comparison | ✅ Live |
-| **Memory** | Per-user pgvector RAG, chat sessions, portfolio context | ✅ Live (P0 fixed) |
-| **Autonomous** | 2-hour portfolio research → digest cards on dashboard | ✅ Live |
-| **Hands** | 6-agent trading floor debate + paper trades | ✅ Live |
-| **Observability** | `/observe`, cost widget, latency/tool/MCP pass-fail per query | ✅ Live |
-| **Safety** | Router guardrails, Bedrock guardrail, policy flags, off-topic blocks | ✅ Live |
+| **Brain** | Unified chat with auto-routing (Chat / Fast / Deep / Debater / Parallel) | ✅ Code live |
+| **Research** | Fast (yfinance), Deep (SEC + Playwright MCP), Multi-agent comparison | ✅ Code live |
+| **Memory** | Per-user pgvector RAG, chat sessions, portfolio context | ✅ P0 fixed |
+| **Autonomous** | 2-hour portfolio research → digest cards on dashboard | ✅ Pipeline live |
+| **Hands** | 6-agent trading floor debate + trade log (advisory) | ✅ Code live |
+| **Observability** | `/observe`, cost widget, latency/tool/MCP pass-fail per query | ✅ Code live |
+| **Safety** | Router guardrails, Bedrock guardrail, policy flags, off-topic blocks | ✅ Code live |
+
+> **Operational note (June 15, 2026):** ECS researcher requires a successful ECR image push to serve traffic. SageMaker + Aurora + Lambdas persist across sessions. See [§34.12](#3412-operational-state--session-lifecycle).
 
 ### One-line pitch
 
 > **"Alex is the AI research team and trading floor you can't afford to hire — transparent, remembered, and always watching your portfolio."**
 
-### Verified production metrics (June 14, 2026)
+### Verified production metrics (June 15, 2026)
 
-- P0 foundation: **51 tests passed**
-- P1 query router: **32 tests passed**
-- ECS health: `http://alex-alb-1582546453.us-east-1.elb.amazonaws.com/health` → healthy
-- Ops agent MTD AWS cost: **~$10.52** (Cost Explorer)
-- Platform health score: **100/100** (7/7 services)
+| Metric | Value |
+|--------|-------|
+| P0 foundation tests | **51 passed** (`scripts/test_p0.sh`) |
+| P1 query router tests | **32 passed** (`scripts/tests/test_p1_router.py`) |
+| Aurora schema tables | **24+** verified via `aurora_warmup.py` |
+| Terraform modules | **9** (`0_vpc` … `9_trading_floor`) |
+| Frontend API routes | **22** Next.js handlers |
+| ECS researcher endpoints | **13** FastAPI routes |
+| Lambda agents | **8** functions |
+| SageMaker embedding | `alex-embedding` — **InService** when session running |
+| Current ALB (session) | `http://alex-alb-1816782403.us-east-1.elb.amazonaws.com` |
+| Frontend (Vercel) | `https://ai-financial-advisor-t6kt-abi2503s-projects.vercel.app` — HTTP 200 |
+| Documentation change log | **CL-001 → CL-017** (see §33) |
+
+> **Full inventory:** See [§34 Current Application State](#34-current-application-state--authoritative-snapshot-june-15-2026) for complete shipped vs planned breakdown.
 
 ---
 
@@ -1032,6 +1046,50 @@ Same personas, different path:
 
 **USP:** Transparent AI committee — every vote, reasoning, confidence stored and visible.
 
+### 14.9 Debate context reset (✅ shipped June 14, 2026)
+
+**Rationale:** Testing Trading Floor requires a clean simulation slate without wiping chat/research memory. Users need repeatable debate runs from a known portfolio seed.
+
+| Item | Detail |
+|------|--------|
+| **Tech** | Next.js API routes, RDS Data API (`@aws-sdk/client-rds-data`), Clerk auth |
+| **Files** | `frontend/lib/tradingDb.ts`, `frontend/app/api/trading/reset/route.ts`, `frontend/app/api/trading/toggle/route.ts`, `frontend/app/trading/page.tsx` |
+| **Behavior** | Deletes user-scoped trading tables; re-seeds `trading_simulations` + `agent_positions` from `portfolios` |
+| **Tables cleared** | `trading_floor_intelligence`, `simulated_trades`, `agent_positions`, `trading_daily_pnl`, `trading_events`, `scout_candidates`, `rl_weights`, `trading_simulations` |
+| **Tables kept** | `portfolios`, `portfolio_digests`, `research_vectors`, `chat_sessions` |
+| **UI** | ↺ Reset Context button + “Fresh context on enable” checkbox on `/trading` |
+| **API** | `POST /api/trading/reset` `{ confirm: true }`; `POST /api/trading/toggle` `{ enabled, reset_context? }` |
+| **Verification** | Manual on `/trading`; P0 static tests unchanged (38/38) |
+
+### 14.10 Planned — Trading Floor 2.0 extensions (`Alex_Trading_Floor_2.0.md`)
+
+Documented in companion spec; not yet implemented unless marked ✅ above.
+
+| Phase | Feature | Rationale | Key tech |
+|-------|---------|-----------|----------|
+| **P0.6** | Full Fresh Start toggle | New-user state for demos/testing — wipe all user Aurora rows | `frontend/lib/freshStart.ts`, `POST /api/account/fresh-start`, type-to-confirm UI |
+| **P1** | Paper trade executor | Simulation must update `agent_positions`, not advisory-only | `trade_executor.py`, wired in `debate_engine` |
+| **P1.5** | Dashboard recommendation approval | Human-in-the-loop before real `portfolios` changes | `trading_recommendations` table, `portfolio_applier.py`, `TradingRecommendations.tsx` |
+| **P3-lite** | Context bridge | Debates read `portfolio_digests` + `research_vectors` | `context_builder.py`, SageMaker embed |
+| **P13** | Quant trader (Zara) | Live RSI/MACD/options via MCP, not text-only | `mcp/quant/*`, `quant_snapshots`, `quant_context.py` |
+| **P5** | Tools-only actions | All mutations via registered tools — no agent SQL | `tool_gateway.py`, `tool_invocations` table |
+| **P5.5** | Tagger agent + observe tags | Full `/observe` filterability; tag assignment not hardcoded | `agents/tagger.py`, `event_tags` table, `ObserveTagPills.tsx` |
+
+### 14.11 Planned — Alex Comprehensive Cost Agent (P21)
+
+Documented in [`Alex_Master_Implementation_Plan.md` — P21](Alex_Master_Implementation_Plan.md#alex-comprehensive-cost-agent-p21); spec only.
+
+| Item | Detail |
+|------|--------|
+| **Goal** | Single daily FinOps report aggregating AWS infra + all agent LLM costs + per-session chat cost + external APIs + trading debate spend |
+| **Synthesis** | Alex (Nova Lite) narrative from all collectors |
+| **Delivery** | EventBridge `cron(0 7 * * ? *)` → `alex-cost-agent` Lambda → SES → `abhishek.suresh2503@gmail.com` |
+| **Replaces** | Fragmented `cost_monitor` (AWS-only) + ops weekly cost email |
+| **Storage** | `cost_daily_reports` table; extends `/api/costs` + `/observe` Daily Cost Report panel |
+| **Effort** | 3–4 days after P11 (P21-lite possible earlier with CloudWatch estimates) |
+
+See [§33](#33-change-log--documentation-policy) for session change log and [Data Source & MCP Registry in `Alex_Trading_Floor_2.0.md`](Alex_Trading_Floor_2.0.md#data-source--mcp-registry).
+
 ---
 
 ## 15. Guardrails & Safety
@@ -1104,7 +1162,11 @@ Alex provides **research and simulation**, not personalized investment advice or
 - Action distribution (BUY/SELL/HOLD/TRIM counts)
 - `data_used` — which RAG chunks influenced vote (roadmap)
 
-### 16.4 UI surfaces
+### 16.4 Planned — Tagger agent & tool observability (P5.5)
+
+Per `Alex_Trading_Floor_2.0.md`: all tool/MCP/action events will receive structured tags via **Tagger agent** (Nova Lite) into `event_tags`; mutations logged in `tool_invocations`. `/observe` will add Tag Explorer, Data Source Map, and Tool Invocation Log panels. See `Alex_report.md` CL-003, §14.10.
+
+### 16.5 UI surfaces
 
 | Surface | Data | Refresh |
 |---------|------|---------|
@@ -1113,14 +1175,21 @@ Alex provides **research and simulation**, not personalized investment advice or
 | CloudWatch `AlexAI/*` | Custom metrics from researcher + trading | Real-time |
 | Terraform dashboard | `Alex-AI-Platform` — error rate, latency alarms | AWS console |
 
-### 16.5 Ops agent (`alex-ops-agent`)
+### 16.6 Ops agent (`alex-ops-agent`)
 
 - Schedule: EventBridge `rate(30 minutes)` — **ENABLED**
 - Upserts `cost_snapshots` with live Cost Explorer data
 - Stores `ops_snapshots` with 7-service health check
 - Verified MTD: **$10.52** (June 2026)
+- **Planned P21:** ops retains health + 30-min dashboard refresh; daily cost synthesis moves to `alex-cost-agent`
 
-### 16.6 RAGAS quality gates (roadmap P17)
+### 16.7 Planned — Daily FinOps email (P21)
+
+- `alex-cost-agent` aggregates: Cost Explorer, `agent_observations`, `query_latency_metrics`, `ops_snapshots`, CloudWatch `AlexAI/*`, external API estimator
+- Alex (Nova Lite) synthesizes report → `cost_daily_reports` → SES daily to `abhishek.suresh2503@gmail.com`
+- See `Alex_Master_Implementation_Plan.md` P21, CL-006
+
+### 16.8 RAGAS quality gates (roadmap P17)
 
 | Metric | Threshold |
 |--------|-----------|
@@ -1200,7 +1269,12 @@ sequenceDiagram
 | `/api/portfolio-research` | GET | Clerk | Digest cards |
 | `/api/trading` | GET | Clerk | Simulation state, trades |
 | `/api/trading/run` | POST | Clerk | Invoke orchestrator Lambda |
-| `/api/trading/toggle` | GET, POST | Clerk | SSM trading enabled |
+| `/api/trading/toggle` | GET, POST | Clerk | SSM trading enabled; optional `reset_context` on enable |
+| `/api/trading/reset` | POST | Clerk | Reset debate context (trading tables only, re-seed from portfolio) |
+| `/api/account/fresh-start` | POST | Clerk | 🔲 P0.6 — full user Aurora wipe (planned) |
+| `/api/trading/recommendations` | GET | Clerk | 🔲 P1.5 — pending dashboard recs (planned) |
+| `/api/trading/recommendations/[id]/approve` | POST | Clerk | 🔲 P1.5 — apply to portfolios (planned) |
+| `/api/trading/recommendations/[id]/dismiss` | POST | Clerk | 🔲 P1.5 — dismiss rec (planned) |
 | `/api/observe` | GET | Clerk | Observability data |
 | `/api/ops` | GET | Clerk | Ops snapshots + health |
 | `/api/costs` | GET, POST | Clerk | Cost snapshots + manual monitor |
@@ -1231,7 +1305,7 @@ sequenceDiagram
 | `/suggestions` | GET | Proactive suggestions |
 | `/test-network` | GET | Network connectivity test |
 
-**ALB:** `http://alex-alb-1582546453.us-east-1.elb.amazonaws.com`
+**ALB:** `http://alex-alb-1816782403.us-east-1.elb.amazonaws.com` (current session; SSM `/alex/ecs_url` — URL changes when ECS Terraform recreates ALB)
 
 ### 18.3 API Gateway (Ingest Lambda)
 
@@ -1468,6 +1542,25 @@ sequenceDiagram
 
 Each module is independently deployable and testable. Numbering enforces dependency order. Module 8 skipped (reserved). Module 9 added for trading floor without renumbering existing infra.
 
+### 22.5 Infrastructure policy — Terraform-first (mandatory)
+
+**Standing rule (user-mandated):** All AWS infrastructure provisioning and configuration changes MUST go through Terraform. No ad-hoc Console edits or one-off CLI commands to create/update durable resources.
+
+| Via Terraform | Via deploy scripts only (code on existing resources) |
+|---------------|-----------------------------------------------------|
+| Lambda definitions, IAM, EventBridge schedules, SQS/DLQ, ECS service defs, ALB, Aurora, SageMaker, SSM *resources*, API Gateway, CloudWatch alarms | `deploy.sh` (ECR/ECS), `deploy_trading.sh` (`update-function-code`), `package.sh` (zip artifacts) |
+
+**Workflow for infra changes:**
+
+```
+terraform/{module}/main.tf → terraform plan → terraform apply
+→ package/deploy application code if needed → health_check.sh → §33 change log
+```
+
+**Not allowed:** `aws lambda create-function`, `aws scheduler create-schedule`, manual IAM/policy changes without a matching TF commit. Session scripts (`start_session.sh`) may enable/disable TF-managed schedules and deploy code — they must not create permanent new resources.
+
+See `Alex_Master_Implementation_Plan.md` — [Infrastructure Policy (Terraform-First)](Alex_Master_Implementation_Plan.md#infrastructure-policy-terraform-first).
+
 ---
 
 ## 23. Deployment & Operations
@@ -1477,7 +1570,7 @@ Each module is independently deployable and testable. Numbering enforces depende
 | Script | Purpose |
 |--------|---------|
 | `scripts/deploy_all.sh` | Full Terraform apply all modules |
-| `scripts/start_session.sh` | Dev session: wake SageMaker, ECS, aurora warmup, health check |
+| `scripts/start_session.sh` | Dev session: IAM wait, SageMaker recreate, ECS+ECR image deploy, aurora warmup, schedulers, trading SSM enable |
 | `scripts/stop_session.sh` | Tear down / pause resources |
 | `scripts/destroy_all.sh` | Destroy infrastructure |
 | `backend/researcher/deploy.sh` | Docker amd64 → ECR → ECS rolling deploy → SSM update |
@@ -1493,11 +1586,28 @@ Each module is independently deployable and testable. Numbering enforces depende
 
 ```
 1. Implement change
-2. Run tests (test_p0.sh / test_p1_router.py)
-3. Deploy touched service only (deploy.sh / deploy_trading.sh)
-4. Frontend playbook checkpoints (TEST_PLAYBOOK.md)
-5. Verify /observe + /health
+2. If AWS infra touched → update Terraform (`terraform/{module}/main.tf`) + `terraform plan` / `apply` (see §22.5)
+3. Run tests (test_p0.sh / test_p1_router.py)
+4. Deploy application code only (deploy.sh / deploy_trading.sh / package.sh) — not new infra via CLI
+5. Frontend playbook checkpoints (TEST_PLAYBOOK.md)
+6. Verify /observe + /health
+7. Document in Alex_report.md §33 Change Log (required — include terraform module if infra)
 ```
+
+**Infrastructure policy (mandatory):** All durable AWS resources are provisioned via **Terraform** only. See [§22.5](#225-infrastructure-policy--terraform-first-mandatory).
+
+**Documentation policy (mandatory):** Every production-impacting change MUST be recorded in [§33 Change Log](#33-change-log--documentation-policy) with:
+
+| Field | Required content |
+|-------|------------------|
+| **What changed** | Files, APIs, schema, infra |
+| **Rationale** | Why — user need, bug, architecture principle |
+| **Tech used** | AWS services, frameworks, models, data sources |
+| **Other key items** | Breaking changes, env vars, cost, security, limitations, rollback |
+| **Tests / verification** | Commands run, pass criteria |
+| **Companion doc** | Update `Alex_Trading_Floor_2.0.md` or `Alex_Master_Implementation_Plan.md` when scope is roadmap-level |
+
+Living specs remain in companion docs; `Alex_report.md` is the **audit trail of what shipped** and **why**.
 
 ### 23.3 ECS researcher deploy
 
@@ -1647,23 +1757,43 @@ cd backend/researcher && bash deploy.sh         # Deploy ECS
 
 | Phase | Name | Status | Key deliverable |
 |-------|------|--------|-----------------|
-| P0 | Foundation fixes | ✅ Complete | Identity, schema, observability |
-| P1 | Query router + unified chat | ✅ Live | Auto-routing, AlexChat |
-| P2 | Tagger-gated ingest + chunking | 🔲 Planned | Only durable research stored |
-| P3 | RAG engine | 🔲 Planned | `rag_engine.py`, MMR reranking |
-| P4 | Alex synthesizer | 🔲 Planned | Commentary layer, Alex voice |
-| P5 | MCP expansion | 🔲 Planned | Earnings, news gateway MCPs |
-| P6 | Trading context bridge | 🔲 Planned | Debates read Alex vectors |
-| P7 | Paper trade executor | 🔲 Planned | Update agent_positions |
-| P8 | RL weight updater | 🔲 Planned | Adaptive agent trust |
-| P9 | Scout + Sentinel | 🔲 Planned | Discovery + stop-loss monitor |
-| P10 | Unified guardrails | 🔲 Planned | Shared guardrails.py |
-| P11 | Full observability | 🔲 Planned | All panels on /observe |
-| P12 | Observer + daily digests | 🔲 Planned | Email P&L digest |
-| P13 | Quant intelligence layer | 🔲 Planned | Technical MCP, FRED, charts |
-| P14 | Trading floor intelligence | 🔲 Planned | Debate memory vector store |
-| P15 | Async deep sub-agents | 🔲 Planned | Parallel SEC/News/Quant |
-| P17 | RAGAS evaluation | 🔲 Planned | CI quality gates |
+| **P0** | Foundation fixes | ✅ Complete | Identity, schema, observability DDL |
+| **P1** | Query router + unified chat | ✅ Live | Auto-routing, `AlexChat`, debater handoffs |
+| **P2** | RAG engine + session memory | 🔲 Planned | `rag_engine.py`, MMR, chunking |
+| **P3** | Alex synthesizer + chunked ingest | 🔲 Planned | Commentary layer, Alex voice |
+| **P4** | Paper trade executor + simulation UI | 🔲 Planned | `agent_positions` updates |
+| **P5** | User trading config + autonomous schedule | 🔲 Planned | EventBridge trading loop |
+| **P6** | Context bridge (AI ↔ Trading) | 🔲 Planned | Debates read `research_vectors` |
+| **P7** | MCP expansion (SEC, News, Earnings) | 🔲 Planned | `mcp/` gateway |
+| **P8** | RL learning loop | 🔲 Planned | `rl_weights` populated |
+| **P9** | Scout + Sentinel agents | 🔲 Planned | Discovery + stop-loss monitor |
+| **P10** | Unified guardrails | 🔲 Partial | Router + Bedrock live; shared module planned |
+| **P11** | Full observability expansion | 🔲 Partial | `/observe` live; 10+ panels planned |
+| **P12** | Observer Lambda + daily digests | 🔲 Planned | Email P&L digest |
+| **P13** | Quant intelligence layer | 🔲 Planned | Technical MCP, FRED, charts |
+| **P14** | Trading floor intelligence vectors | 🔲 Scaffolded | Table exists; ingest not wired |
+| **P15** | Async deep sub-agents | 🔲 Planned | Parallel SEC/News/Quant |
+| **P17** | RAGAS evaluation framework | 🔲 Partial | `test_ragas.py` exists; CI gate not live |
+| **P21** | Comprehensive cost agent | 📝 Spec | Daily FinOps email |
+| **P22** | LangSmith tracing | 📝 Spec | Production traces + human review |
+| **P23** | LangGraph orchestration | 📝 Spec | 4 selective state graphs |
+| **P24** | Agentic RAG engine | 📝 Spec | CRAG/Self-RAG loop on edu + chat |
+
+### 26.4 Trading Floor 2.0 planning session (June 14, 2026)
+
+Approved architecture captured in `Alex_Trading_Floor_2.0.md` (not all implemented):
+
+| Topic | Decision | Rationale |
+|-------|----------|-----------|
+| Step-by-step implementation | User approves each phase before code | Reviewable diffs; avoid big-bang |
+| MVP sequence | P0 → P1 → P1.5 → P3-lite → P2 → P7-min → P13 → P14 | Executor before recommendations; quant after simulation works |
+| Recommendation adoption | Dashboard approve only | Simulation ≠ real portfolio; regulatory clarity |
+| Fresh Start vs Reset Context | Two tiers | Trading-only test vs full new-user wipe |
+| Agent mutations | Tools-only (P5) | Audit trail, idempotency, observe tags |
+| Observability tags | Tagger agent (P5.5) | Centralized labeling, not scattered in UI |
+| Data sources | Tier 1/2/3 registry | Maps yfinance → future Polygon/FRED MCP |
+
+**Shipped in same session:** debate context reset (§14.9), `start_session.sh` hardening (§33 CL-002).
 
 ---
 
@@ -1792,6 +1922,10 @@ ai_financial_advisor/
 │   │   ├── context_service.py        # RAG + session memory (6 use cases)
 │   │   ├── debater_registry.py       # Specialist pattern matching
 │   │   ├── debater_handoff.py        # Debater stream execution
+│   │   ├── server.py                 # FastAPI — all research endpoints
+│   │   ├── query_router.py           # ✅ P1 intent classification
+│   │   ├── debater_registry.py       # ✅ Specialist handoff patterns
+│   │   ├── debater_handoff.py        # ✅ Single-agent chat stream
 │   │   ├── tools.py                  # yfinance, EdgarTools, ingest
 │   │   ├── mcp_servers.py            # Playwright MCP config
 │   │   ├── prompts.py                # All agent prompt templates
@@ -1825,20 +1959,26 @@ ai_financial_advisor/
 │   ├── app/
 │   │   ├── api/alex/chat/route.ts    # Unified SSE entry point
 │   │   ├── api/alex/session/route.ts # Session CRUD
-│   │   ├── api/trading/              # run, toggle, state
+│   │   ├── api/trading/              # run, toggle, reset, state
+│   │   ├── api/account/fresh-start/  # 🔲 P0.6 planned
 │   │   ├── api/observe/route.ts      # Observability API
 │   │   ├── api/ops/route.ts          # Cost + health API
 │   │   ├── research/page.tsx         # Unified Alex chat UI
 │   │   ├── dashboard/page.tsx        # Digests + cost widget
-│   │   ├── trading/page.tsx          # Debate UI
+│   │   ├── trading/page.tsx          # Debate UI + reset controls
 │   │   └── observe/page.tsx          # Observability UI
 │   ├── components/
 │   │   ├── AlexChat.tsx              # SSE chat, badges, handoff banner
 │   │   ├── OpsCostWidget.tsx         # Live AWS cost on dashboard
-│   │   └── AlexMarkdown.tsx          # Markdown rendering
+│   │   ├── AlexMarkdown.tsx          # Markdown rendering
+│   │   ├── TradingRecommendations.tsx # 🔲 P1.5 planned
+│   │   ├── FreshStartModal.tsx       # 🔲 P0.6 planned
+│   │   └── ObserveTagPills.tsx       # 🔲 P5.5 planned
 │   └── lib/
 │       ├── deepResearch.ts           # Planner + SQS poll + synthesize
-│       └── config.ts                 # ECS URL from SSM
+│       ├── config.ts                 # ECS URL from SSM
+│       ├── tradingDb.ts              # ✅ resetTradingDebateContext
+│       └── freshStart.ts             # 🔲 P0.6 planned
 │
 ├── scripts/
 │   ├── test_p0.sh                    # 51 foundation checks
@@ -1851,6 +1991,12 @@ ai_financial_advisor/
 │
 └── terraform/
     ├── 0_vpc/ … 9_trading_floor/     # 9 IaC modules
+
+Documentation (strategic):
+├── Alex_report.md                    # This report — §34 current state
+├── Alex_Master_Implementation_Plan.md
+├── Alex_AI_2.0.md / Alex_chat_intelligence.md / Alex_Trading_Floor_2.0.md
+├── Agentic_Usecase.md / usecases.md / RIA.md / DM_apply.md / Ophelia.md
 ```
 
 ---
@@ -1871,6 +2017,713 @@ ai_financial_advisor/
 | RAGAS eval not in CI | Quality not gated on deploy | P17 |
 | Quant MCP layer not built | Zara lacks live indicator tools | P13 |
 | `trading_floor_intelligence` table empty | No debate memory flywheel | P14 |
+| Tools-only gateway not built | Agents/APIs still use direct SQL in places | P5 |
+| Tagger agent for observe not built | Tags hardcoded in UI only | P5.5 |
+| Full Fresh Start not built | Only debate-context reset shipped | P0.6 |
+| Dashboard recommendation approval not built | Debates don't surface on dashboard yet | P1.5 |
+| ECR push flaky via Docker Desktop proxy | ECS tasks fail without `:latest` image | `deploy.sh` / proxy fix |
+| Education answers not vector-cached | Repeat concepts re-hit LLM | `Alex_chat_intelligence.md` C1 / P24 |
+| No LangSmith / LangGraph / Agentic RAG | Eval traces manual; passive RAG only | P22–P24 (spec) |
+| No PDF report delivery | Deep research chat-only | `Alex_chat_intelligence.md` C3 |
+| No earnings calendar agent | No proactive earnings alerts | `Alex_chat_intelligence.md` C5 |
+
+---
+
+## 33. Change Log & Documentation Policy
+
+### 33.1 Policy
+
+**Standing rule (user-mandated):** All engineers and agents working on Alex MUST append an entry to this section when shipping or materially planning production changes. No code merge or deploy is considered complete until §33 is updated.
+
+**Infrastructure rule (user-mandated):** Any AWS resource change (Lambda, EventBridge, IAM, SQS, etc.) MUST be made in `terraform/` and applied via `terraform apply` — never ad-hoc CLI/Console. See [§22.5](#225-infrastructure-policy--terraform-first-mandatory).
+
+**Each entry includes:**
+
+1. **ID & date** — `CL-NNN` sequential
+2. **Summary** — one line
+3. **Rationale** — business/technical why (user need, bug, architecture principle, regulatory posture)
+4. **What changed** — files, APIs, schema, infra, UI routes
+5. **Tech stack** — AWS services, SDKs, models, data sources, frameworks, env vars touched
+6. **Verification** — tests/commands run and pass criteria
+7. **Other key items** (as applicable):
+   - Breaking changes or migration steps
+   - New env vars / SSM parameters / secrets (names only — never values)
+   - Cost or latency impact
+   - Security / guardrail implications
+   - Known limitations, follow-ups, or blocked dependencies
+   - Rollback procedure (if infra)
+8. **Companion docs** — which `.md` specs were updated (`Alex_Trading_Floor_2.0.md`, `Alex_Master_Implementation_Plan.md`, `Alex_Fixes.md`, etc.)
+9. **Status** — ✅ Shipped | 🔲 Planned | 📝 Spec only
+
+**Platform bug fixes:** Agents MUST also append a detailed entry to `Alex_Fixes.md` (FIX-NNN) automatically when fixing conversation routing, agent behavior, chat-path regressions, **RAG/vector search**, **ops/dashboard**, or **observability** issues — no user prompt required. Cross-reference the FIX IDs in the matching §33 CL entry.
+
+**Do not** commit secrets, API keys, or PII in change log entries.
+
+### 33.2 Change log
+
+#### CL-001 — Debate context reset (Trading Floor testing)
+
+| Field | Value |
+|-------|-------|
+| **Date** | 2026-06-14 |
+| **Status** | ✅ Shipped |
+| **Summary** | Per-user trading simulation wipe + re-seed from portfolio |
+| **Rationale** | Repeatable Trading Floor test runs without clearing chat/RAG; supports “fresh context on enable” workflow |
+| **Files** | `frontend/lib/tradingDb.ts`, `frontend/app/api/trading/reset/route.ts`, `frontend/app/api/trading/toggle/route.ts`, `frontend/app/trading/page.tsx` |
+| **Tech** | Next.js 14 App Router, Clerk `auth()`, AWS RDS Data API, TypeScript, Aurora PostgreSQL |
+| **API** | `POST /api/trading/reset`, extended `POST /api/trading/toggle` |
+| **Schema** | DELETE on 8 user-scoped trading tables; INSERT `trading_simulations` + `agent_positions` |
+| **Verification** | UI on `/trading`; P0 static 38/38 pass |
+| **Companion docs** | `Alex_Trading_Floor_2.0.md` Phase 0.6 comparison table |
+
+#### CL-002 — `start_session.sh` session entrypoint fixes
+
+| Field | Value |
+|-------|-------|
+| **Date** | 2026-06-14 |
+| **Status** | ✅ Shipped |
+| **Summary** | Reliable paid-service spin-up after `stop_session.sh` teardown |
+| **Rationale** | SageMaker failed on IAM race; ECS failed without ECR image; EventBridge `.env` path broken |
+| **Files** | `scripts/start_session.sh`, `scripts/toggle_eventbridge.sh` |
+| **Tech** | Bash, Terraform (`2_sagemaker`, `4_researcher`), AWS CLI, Docker/ECR (`backend/researcher/deploy.sh`), SSM Parameter Store |
+| **Fixes** | IAM propagation wait (20s); Failed SageMaker cleanup + recreate; `ensure_ecr_image()` auto-deploy; ECS health polling; trading SSM enable on start; fixed `toggle_eventbridge.sh` `.env` path |
+| **Verification** | SageMaker `InService`; ECS `/health` healthy; ALB `http://alex-alb-975056483.us-east-1.elb.amazonaws.com` |
+| **Companion docs** | `Alex_Trading_Floor_2.0.md` § `start_session.sh` |
+
+#### CL-003 — Trading Floor 2.0 architecture spec (planning only)
+
+| Field | Value |
+|-------|-------|
+| **Date** | 2026-06-14 |
+| **Status** | 📝 Spec only |
+| **Summary** | Expanded `Alex_Trading_Floor_2.0.md` with P1.5, P0.6, data/MCP registry, tools-only model, Tagger agent |
+| **Rationale** | Single source of truth before step-by-step implementation; aligns research + trading + quant + observe |
+| **Key items documented** | Dashboard recommendation approval; Fresh Start toggle; Data Source & MCP Registry (Tier 1–3); Tools-Only Agent Action Model; Tagger Agent & tagged `/observe`; implementation phases P0.6, P1.5, P5.5 |
+| **Tech (planned)** | Nova Lite Tagger, `tool_invocations`, `event_tags`, `trading_recommendations`, quant MCP P13, pgvector TFI P14 |
+| **Companion docs** | `Alex_Trading_Floor_2.0.md` (primary), cross-ref `Alex_Master_Implementation_Plan.md` |
+| **Next step** | User approval → P1 paper trade executor |
+
+#### CL-004 — Documentation policy (this section)
+
+| Field | Value |
+|-------|-------|
+| **Date** | 2026-06-14 |
+| **Status** | ✅ Shipped |
+| **Summary** | Mandatory change log in `Alex_report.md` for all future work |
+| **Rationale** | User requirement: every change documented with rationale, tech, and verification |
+| **Files** | `Alex_report.md` §33, §23.2 workflow update |
+| **Tech** | Markdown process — no runtime code |
+
+#### CL-005 — Documentation policy reinforcement
+
+| Field | Value |
+|-------|-------|
+| **Date** | 2026-06-13 |
+| **Status** | ✅ Shipped |
+| **Summary** | Strengthened §33 mandatory fields; cross-ref in `Alex_Trading_Floor_2.0.md` |
+| **Rationale** | User requirement: every change must be documented in `Alex_report.md` with full rationale, tech used, and other key items before work is considered complete |
+| **Files** | `Alex_report.md` §33.1, §23.2, §16.4; `Alex_Trading_Floor_2.0.md` header |
+| **Other key items** | Step 6 of §23.2 workflow is blocking; companion specs hold roadmap detail; §33 is audit trail |
+| **Verification** | Policy text reviewed; CL-001–CL-004 entries already conform |
+
+#### CL-006 — Alex Comprehensive Cost Agent (P21 spec)
+
+| Field | Value |
+|-------|-------|
+| **Date** | 2026-06-13 |
+| **Status** | 📝 Spec only |
+| **Summary** | P21 — unified FinOps agent: aggregate all platform costs, Alex synthesis, daily SES email |
+| **Rationale** | User requirement: one daily report covering AWS + every agent + per-session API/LLM cost; current `cost_monitor` + `ops_agent` are fragmented (alert-only or Monday weekly) |
+| **Key items documented** | 5-layer cost collectors; `cost_daily_reports` schema; `alex-cost-agent` Lambda; EventBridge 7 AM ET; recipient `abhishek.suresh2503@gmail.com`; deprecate `cost_monitor` schedule; `/observe` panels 32–35 |
+| **Tech (planned)** | AWS Cost Explorer, RDS Data API, `agent_observations`, `query_latency_metrics`, CloudWatch, Nova Lite synthesis, SES, EventBridge Scheduler, Terraform `6_agents` |
+| **Files (planned)** | `backend/agents/cost_agent.py`, `cost_collectors.py`, `scripts/aurora_warmup.py`, `terraform/6_agents/main.tf`, `frontend/app/api/costs/route.ts`, `scripts/tests/test_p21_cost_agent.py` |
+| **Companion docs** | `Alex_Master_Implementation_Plan.md` § P21 (primary), `Alex_report.md` §14.11, §16.7 |
+| **Other key items** | P21-lite before P15 uses CloudWatch estimates; full per-session accuracy after `query_latency_metrics.cost_usd`; ops agent keeps health alerts only |
+| **Next step** | User approval → implement P21 after P11 baseline |
+
+#### CL-007 — Terraform-first infrastructure policy
+
+| Field | Value |
+|-------|-------|
+| **Date** | 2026-06-13 |
+| **Status** | ✅ Shipped (policy) |
+| **Summary** | Mandatory: all AWS infra changes via Terraform only |
+| **Rationale** | User requirement — infra always updated via Terraform; prevents drift, undocumented Console/CLI resources, and unreproducible environments |
+| **Files** | `Alex_Master_Implementation_Plan.md` (header + Infrastructure Policy section), `Alex_report.md` §22.5, §23.2, §33.1 |
+| **Other key items** | Deploy scripts (`deploy.sh`, `deploy_trading.sh`) update **code** on TF-managed resources only; `start_session.sh` is session lifecycle not infra provisioning; P21 `alex-cost-agent` example cites `terraform/6_agents` |
+| **Verification** | Policy documented; existing modules `0_vpc`–`9_trading_floor` remain source of truth |
+
+#### CL-008 — Agentic AI use cases & beginner setup guide
+
+| Field | Value |
+|-------|-------|
+| **Date** | 2026-06-14 |
+| **Status** | ✅ Shipped |
+| **Summary** | New `usecases.md` — cross-industry use cases, startup ideas, beginner replication plan |
+| **Rationale** | User request: document what else the Alex agentic infra can solve, viable startups, and how beginners can build a similar stack |
+| **Files** | `usecases.md` (new), `Alex_Master_Implementation_Plan.md` document index |
+| **Key items** | 10 cross-industry use cases; Tier A/B/C startup matrix; 5-phase beginner plan (12 weeks); decision scoring framework; Terraform apply order |
+| **Companion docs** | Cross-ref `Startup.md`, `Alex_report.md` §22, `Alex_Master_Implementation_Plan.md` |
+
+#### CL-009 — RIA Copilot product spec (`RIA.md`)
+
+| Field | Value |
+|-------|-------|
+| **Date** | 2026-06-14 |
+| **Status** | 📝 Spec only |
+| **Summary** | Full RIA Copilot report — white-label Alex for registered investment advisors |
+| **Rationale** | User request: document RIA Copilot and how to leverage Alex architecture (highest-ARPU B2B path per `usecases.md` A2) |
+| **Files** | `RIA.md` (new), cross-ref `usecases.md`, `Startup.md`, `Alex_Master_Implementation_Plan.md` |
+| **Key items** | Firm→advisor→client tenancy; `client_memos` + `compliance_audit_log` schema; component reuse matrix (70–95%); phases R0–R4; $300/advisor/mo; 6–8 week MVP; human-in-the-loop approval |
+| **Tech (planned)** | Reuse Alex scheduler, reporter, debate engine, RAG, guardrails, Terraform 0–9; Clerk Organizations; no new TF modules for MVP |
+| **Other key items** | Not robo-advisor — advisor approves all client-facing output; compliance export for SEC/FINRA exams |
+| **Next step** | Complete Alex MVP Sprints 1–3 → R0 tenancy |
+
+#### CL-010 — Expanded startup use cases in `usecases.md`
+
+| Field | Value |
+|-------|-------|
+| **Date** | 2026-06-14 |
+| **Status** | ✅ Shipped |
+| **Summary** | Added 12 use cases (§3.11–3.22) and 18+ startup ideas (A6–A11, B6–B12, C4–C5, D1–D3) |
+| **Rationale** | User request: more startup-worthy use cases leveraging Alex architecture |
+| **Files** | `usecases.md` §3, §5, §8, Summary |
+| **Key additions** | FP&A Copilot, Family Office, CRE Credit Memo, SellerFloor, Incident Commander, GrantPulse, TaxImpact AI, PriorArt Scout, FranchisePulse, BriefingAI, CoverageCommittee, M&A Target Scout, platform plays (AgenticOS, Debate API) |
+| **Other key items** | Alex reuse % column on all startup tiers; fixed broken A2/A3 table; BriefingAI flagged as fastest non-finance pivot (90%) |
+
+#### CL-011 — Ophelia integrations section in `usecases.md`
+
+| Field | Value |
+|-------|-------|
+| **Date** | 2026-06-14 |
+| **Status** | ✅ Shipped |
+| **Summary** | §9 Ophelia Integrations — 10 Alex-based projects mapped to Ophelia execution thesis |
+| **Rationale** | User request: read `Ophelia.md` thesis and suggest buildable use-case projects on Alex architecture |
+| **Files** | `usecases.md` §9, TOC §10, document index |
+| **Key items** | Ophelia 4-theme summary; Alex↔Ophelia map; projects: ConfirmGate, Provider Adapter SDK, Paper Book, Multi-Party Coordinator, Idempotent Gateway, Observability v2, MCP Gateway, BriefingAI, Resilience Lab, Outcome Eval; 30-day sprint plan; schema stubs |
+| **Companion docs** | `Ophelia.md` (primary), cross-ref `RIA.md`, `Alex_Master_Implementation_Plan.md` P5/P15/P17/P18 |
+
+#### CL-012 — `DM_apply.md` LinkedIn outreach generator
+
+| Field | Value |
+|-------|-------|
+| **Date** | 2026-06-14 |
+| **Status** | ✅ Shipped |
+| **Summary** | `DM_apply.md` — paste JD/LinkedIn message + `DM` → one-paragraph tailored outreach |
+| **Rationale** | User request: reusable prompt file referencing resume, Alex code, and docs for job outreach |
+| **Files** | `DM_apply.md` |
+| **Key items** | Agent instructions; resume proof bank; Alex proof bank with code anchors; DM formula (80–120 words); tailoring by company type; 5 example DMs; JD keyword map; optional context tags |
+| **Companion docs** | `Abhishek_Resume.pdf`, `Alex_report.md`, `Ophelia.md`, `usecases.md` |
+
+#### CL-013 — `DM_apply.md` Results Log + append policy
+
+| Field | Value |
+|-------|-------|
+| **Date** | 2026-06-14 |
+| **Status** | ✅ Shipped |
+| **Summary** | Results Log section — all future `DM` requests append generated copy here |
+| **Rationale** | User request: persist outreach results in `DM_apply.md` for reuse |
+| **Files** | `DM_apply.md` § Results Log, agent instructions updated |
+| **Key items** | First entry: $250M raise hiring post (comment + follow-up DM) |
+
+#### CL-014 — Warm intro templates in `DM_apply.md`
+
+| Field | Value |
+|-------|-------|
+| **Date** | 2026-06-14 |
+| **Status** | ✅ Shipped |
+| **Summary** | § Warm Intro templates — mutual intro, standalone "what I build", hiring fit, email subjects |
+| **Rationale** | User request: generic template with placeholders for profile + deployed link |
+| **Files** | `DM_apply.md` |
+| **Key items** | Placeholder key (`[DEMO_URL]`, `[LINKEDIN_URL]`, `[GITHUB_URL]`, etc.); 4 templates + short blurb + filled example |
+
+#### CL-015 — `Alex_chat_intelligence.md` conversation routing plan
+
+| Field | Value |
+|-------|-------|
+| **Date** | 2026-06-14 |
+| **Status** | 📝 Spec only |
+| **Summary** | Chat intelligence plan — edu fast search + vector ingest, SEC unchanged, deep PDF, debater handoffs, earnings calendar agent |
+| **Rationale** | User request: improve Alex chat routing for education, filings, deep reports, debater agents, proactive earnings |
+| **Files** | `Alex_chat_intelligence.md` |
+| **Key items** | C1 edu_fast (vector-first + glossary seed + ingest); C2 SEC keep current; C3 PDF report agent + MCP; C4 debater expansion; C5 earnings calendar agent; C6 nine agentic addons; router/schema/SSE changes; 3-week sprint |
+| **Companion docs** | `Alex_AI_2.0.md`, `query_router.py`, `debater_registry.py`, `Alex_Master_Implementation_Plan.md` P2/P6/P7 |
+
+#### CL-016 — `Agentic_Usecase.md` current-setup agentic catalog
+
+| Field | Value |
+|-------|-------|
+| **Date** | 2026-06-14 |
+| **Status** | ✅ Shipped |
+| **Summary** | Agentic use cases grounded in live Alex — Tier A (10 today) through Tier E (B2B) |
+| **Rationale** | User request: suggest agentic use cases with current setup |
+| **Files** | `Agentic_Usecase.md` |
+| **Key items** | 10 Tier A (no code); 8 Tier B extensions; 6 composed workflows; 7 demo packs; matrix; build order |
+| **Companion docs** | `usecases.md` (cross-industry), `Alex_report.md`, `Alex_chat_intelligence.md` |
+
+#### CL-017 — LangChain Family + Agentic RAG sections in master plan
+
+| Field | Value |
+|-------|-------|
+| **Date** | 2026-06-14 |
+| **Status** | 📝 Spec only |
+| **Summary** | `Alex_Master_Implementation_Plan.md` — LangChain Family (P22–P23) + Agentic RAG (P24) |
+| **Rationale** | User request: feasibility of LangGraph, LangChain, LangSmith + agentic RAG |
+| **Files** | `Alex_Master_Implementation_Plan.md` § LangChain Family, § Agentic RAG, phases table, sprint order, decision checklist |
+| **Key items** | Incremental adoption (no full rewrite); P22 LangSmith traces; P23 LangGraph for 4 flows; LangChain retrievers only; P24 CRAG/Self-RAG graph; native Python fallback; P17 Path C eval gate |
+| **Verdict** | ✅ Feasible — LangSmith first, Agentic RAG with P2, LangGraph selective |
+
+#### CL-018 — Full `Alex_report.md` current-state refresh (§34)
+
+| Field | Value |
+|-------|-------|
+| **Date** | 2026-06-15 |
+| **Status** | ✅ Shipped |
+| **Summary** | Authoritative §34 snapshot — complete current application inventory |
+| **Rationale** | User request: report must represent current state of Alex with all details |
+| **Files** | `Alex_report.md` §1, §26.3, §32, §34, §18 ALB URL, TOC |
+| **Key items** | Shipped vs planned matrix; 11 UI pages; 22 API routes; 24+ tables; 8 Lambdas; session ops state; documentation ecosystem; P22–P24 specs |
+
+#### CL-019 — Chat intelligence routing fixes (FIX-001 – FIX-005)
+
+| Field | Value |
+|-------|-------|
+| **Date** | 2026-06-15 |
+| **Status** | ✅ Shipped + deployed |
+| **Summary** | Query router + deep agent fixes: SEC stubs, follow-up context, scoped deep research, SEC education routing, canned-reply bypass |
+| **Rationale** | User-reported chat regressions: Micron SEC returned storage stub not filings; NVDA follow-up returned ASML; 10-K queries over-fetched analyst/options; conceptual SEC questions hit Deep Research or off-scope canned reply; `ALEX` ticker hallucination from chat role prefix |
+| **Fix IDs** | FIX-001 (SEC stub), FIX-002 (follow-up pronoun), FIX-003 (scoped deep), FIX-004 (sec_education routing), FIX-005 (canned block + ALEX ticker) — see `Alex_Fixes.md` |
+| **Files** | `backend/researcher/query_router.py`, `backend/researcher/server.py`, `backend/researcher/prompts.py`, `backend/researcher/tools.py`, `backend/researcher/context_service.py`, `scripts/tests/test_p1_router.py`, `Alex_Fixes.md` |
+| **Tech** | Python regex router, Nova Pro deep agent, Nova Lite conversation, EdgarTools `get_sec_filings`, ingest stub detection, `COMPANY_ALIASES`, `ResearchScope` / `infer_research_scope`, `sec_education` intent, ECS Fargate |
+| **Key routing rules** | No ticker + SEC concept → `chat`/`sec_education`; company/ticker + SEC → scoped `deep`; 10-K only → `filing_10k` scope; follow-up `its` → resolve ticker from last ALEX message |
+| **Verification** | `python3 scripts/tests/test_p1_router.py` — 50/50 pass; live ALB `/research/route` confirms `sec_education` for conceptual queries |
+| **Deploy** | `backend/researcher/deploy.sh` ×2 (22:32 + 22:51 UTC); ALB `http://alex-alb-1816782403.us-east-1.elb.amazonaws.com`; SSM `/alex/ecs_url` updated |
+| **Known follow-ups** | Aurora `get_prior_research` SQL type-cast error in logs; frontend badge for `sec_education` (P3) |
+| **Companion docs** | `Alex_Fixes.md` (primary audit), `Alex_chat_intelligence.md` (planned C1–C6) |
+
+#### CL-020 — Follow-up sentiment context (FIX-006)
+
+| Field | Value |
+|-------|-------|
+| **Date** | 2026-06-15 |
+| **Status** | ✅ Shipped + deployed |
+| **Summary** | Pronoun follow-ups like *"what is its market sentiment?"* resolve session ticker and route to fast research |
+| **Rationale** | After Micron deep research, user referred with *"its"* — router sent chat + canned off-scope instead of MU fast research |
+| **Fix ID** | FIX-006 — see `Alex_Fixes.md` |
+| **Files** | `backend/researcher/query_router.py`, `backend/researcher/server.py`, `scripts/tests/test_p1_router.py` |
+| **Verification** | `python3 scripts/tests/test_p1_router.py` — 51/51 pass; Micron context → `fast` / `MU` |
+| **Companion docs** | `Alex_Fixes.md` FIX-006 |
+
+#### CL-021 — Observe page LLM tokens + AWS cost (FIX-007)
+
+| Field | Value |
+|-------|-------|
+| **Date** | 2026-06-15 |
+| **Status** | ✅ Shipped + deployed |
+| **Summary** | `/observe` shows input/output tokens and AWS Bedrock cost per query; chat route tag → **chat observability** |
+| **Rationale** | User needs FinOps visibility per chat query — latency alone is insufficient for cost attribution on Nova Lite/Pro |
+| **Fix ID** | FIX-007 — see `Alex_Fixes.md` |
+| **Files** | `backend/researcher/bedrock_cost.py` (new), `latency_tracker.py`, `server.py`, `scripts/aurora_warmup.py`, `frontend/app/api/observe/route.ts`, `frontend/app/observe/page.tsx` |
+| **Tech** | Bedrock Converse stream `metadata.usage`, Aurora `query_latency_metrics.input_tokens/output_tokens/cost_usd`, Nova Lite list pricing ($0.00006/1K in, $0.00024/1K out) |
+| **Verification** | Aurora warmup migrations pass; new queries after ECS deploy show token/cost on `/observe` |
+| **Other key items** | Pre-deploy queries show $0 — only new traffic gets Bedrock usage; fallback `chars//4` estimate when usage metadata absent |
+| **Companion docs** | `Alex_Fixes.md` FIX-007 |
+
+#### CL-022 — Dashboard ops refresh invokes alex-ops-agent (FIX-008)
+
+| Field | Value |
+|-------|-------|
+| **Date** | 2026-06-15 |
+| **Status** | ✅ Shipped |
+| **Summary** | Dashboard **Refresh now** triggers live `alex-ops-agent` run instead of re-reading stale Aurora snapshots |
+| **Rationale** | User clicked refresh but timestamp never updated — widget only polled DB, never invoked ops Lambda |
+| **Fix ID** | FIX-008 — see `Alex_Fixes.md` |
+| **Files** | `frontend/app/api/ops/route.ts`, `frontend/components/OpsCostWidget.tsx` |
+| **Tech** | `@aws-sdk/client-lambda` `InvokeCommand` → `alex-ops-agent` `{ action: monitor }`; then `GET /api/ops` |
+| **Verification** | Manual refresh updates Last refresh; Lambda invoke `health_score: 100` |
+| **Companion docs** | `Alex_Fixes.md` FIX-008 |
+
+#### CL-023 — pgvector semantic search pipeline (FIX-009)
+
+| Field | Value |
+|-------|-------|
+| **Date** | 2026-06-15 |
+| **Status** | ✅ Shipped + deployed |
+| **Summary** | Fix `/search` 502, RDS Data API 0-result bug, debug vector cleanup, Micron chunked re-ingest |
+| **Rationale** | RAG returned wrong/empty results; Micron follow-ups could not use prior research (score &lt; 0.65) |
+| **Fix ID** | FIX-009 — see `Alex_Fixes.md` |
+| **Files** | `backend/ingest/ingest_pgvector.py`, `rag_utils.py`, `context_service.py`, `frontend/app/api/search/route.ts`, `scripts/rag_maintenance.py`, `scripts/test_pgvector_rag.py` |
+| **Tech** | pgvector subquery `ORDER BY score DESC`; SageMaker throttle retry; paragraph chunking (1200 chars); Lambda-first `/api/search` |
+| **Verification** | `python3 scripts/rag_maintenance.py --verify` — Micron score 0.67+; API GW HTTP 200; 48 junk vectors removed |
+| **Other key items** | `scripts/rag_maintenance.py --all` for repeat cleanup; ingest λ + ECS researcher redeployed |
+| **Companion docs** | `Alex_Fixes.md` FIX-009 |
+
+#### CL-024 — Trading education routing (FIX-010)
+
+| Field | Value |
+|-------|-------|
+| **Date** | 2026-06-15 |
+| **Status** | ✅ Shipped + deployed |
+| **Summary** | *"explain stop loss?"* routes to chat/education instead of canned off-topic block |
+| **Rationale** | Valid investing concepts were rejected because educational frame without `FINANCE_TOPIC_PATTERNS` match → off_topic |
+| **Fix ID** | FIX-010 — see `Alex_Fixes.md` |
+| **Files** | `backend/researcher/query_router.py`, `backend/researcher/server.py`, `scripts/tests/test_p1_router.py` |
+| **Verification** | `python3 scripts/tests/test_p1_router.py` — 55/55 pass |
+| **Companion docs** | `Alex_Fixes.md` FIX-010 |
+
+#### CL-025 — LLM finance gate for education (FIX-011)
+
+| Field | Value |
+|-------|-------|
+| **Date** | 2026-06-16 |
+| **Status** | ✅ Shipped + deployed |
+| **Summary** | Ambiguous investing questions use Nova Lite finance gate — no per-concept regex sprawl |
+| **Rationale** | User: Alex must understand concepts like vega/gamma without adding few-shot patterns for each term |
+| **Fix ID** | FIX-011 — see `Alex_Fixes.md` |
+| **Files** | `backend/researcher/query_router.py`, `backend/researcher/server.py`, `scripts/tests/test_p1_router.py` |
+| **Tech** | `_llm_finance_gate()` Nova Lite; `ROUTER_USE_LLM_GATE`; hybrid regex-then-LLM order |
+| **Verification** | 59/59 router tests; mocked gate for vega/gamma/theta |
+| **Companion docs** | `Alex_Fixes.md` FIX-011 |
+
+#### CL-026 — Vague follow-up after insider research (FIX-012)
+
+| Field | Value |
+|-------|-------|
+| **Date** | 2026-06-16 |
+| **Status** | ✅ Shipped + deployed |
+| **Summary** | *"are there any other details?"* after AMD Form 4 routes to deep MCP, not generic chat |
+| **Rationale** | User asked for more AMD insider data; router lost session ticker/topic on vague continuation |
+| **Fix ID** | FIX-012 — see `Alex_Fixes.md` |
+| **Files** | `backend/researcher/query_router.py`, `backend/researcher/server.py`, `scripts/tests/test_p1_router.py` |
+| **Tech** | `_is_vague_continuation`, `_infer_context_topic`, `enrich_follow_up_query`, insider → `filing_form4` |
+| **Verification** | 62/62 router tests; AMD insider vague follow-up cases |
+| **Companion docs** | `Alex_Fixes.md` FIX-012 |
+
+---
+
+## 34. Current Application State — Authoritative Snapshot (June 15, 2026)
+
+> **Purpose:** Single source of truth for what Alex **is today** — shipped code, live infra, specs-only plans, and operational caveats. Supersedes scattered status notes elsewhere when they conflict.
+
+### 34.1 What Alex is (today)
+
+**Alex** is a multi-agent AI financial intelligence platform on AWS:
+
+- **Not** a brokerage, robo-advisor, or ChatGPT skin
+- **Is** an AI-native research + simulation layer over a user's portfolio
+- **Primary UX:** unified chat (`/research`) with automatic routing — no Fast/Deep toggle
+- **Autonomous layer:** 2-hour portfolio research → dashboard digest cards
+- **Trading layer:** 6-agent debate committee → advisory paper trades (positions not auto-updated)
+- **Ops layer:** `/observe` cost, latency, guardrails; session scripts for AWS spin-up/down
+
+**Regulatory posture:** Research + education + paper simulation — not personalized investment advice or real execution.
+
+---
+
+### 34.2 Shipped vs planned — master matrix
+
+| Capability | Shipped (code live) | Planned (spec / partial) |
+|------------|---------------------|---------------------------|
+| Query router (5 routes) | ✅ `query_router.py` | Edu fast search route (`Alex_chat_intelligence.md` C1) |
+| Unified chat SSE | ✅ `/api/alex/chat` | Suggestion chips, PDF artifact events |
+| Fast research | ✅ yfinance + tools | Agentic RAG context (P24) |
+| Deep SEC + MCP | ✅ Playwright + EdgarTools | SEC/News/Earnings MCP expansion (P7) |
+| Deep parallel compare | ✅ Planner → SQS → reporter | P15 async sub-agents on ECS |
+| Debater handoffs (5) | ✅ `debater_registry.py` | Committee mini-debate (C6.2) |
+| Conversation / education | ✅ Nova Lite chat | Vector-first edu + ingest (C1) |
+| Guardrails | ✅ Policy flags, off-topic, Bedrock | Unified `guardrails.py` (P10) |
+| pgvector RAG ingest | ✅ `ingest_pgvector.py` | Chunking, tagger-gated ingest (P2/P3) |
+| Session memory | ✅ `chat_sessions`, user-scoped vectors | `rag_engine.py` hybrid retrieval (P2) |
+| Portfolio digests (2h) | ✅ scheduler pipeline | — |
+| Trading floor debate | ✅ 6 agents, SQS, manual run | Autonomous EventBridge (P5) |
+| Paper trade log | ✅ `simulated_trades` | Executor updates positions (P4) |
+| Debate context reset | ✅ `/api/trading/reset` | Full Fresh Start P0.6 |
+| Observability UI | ✅ `/observe` partial | Full panels + RAGAS + LangSmith (P11/P17/P22) |
+| Cost monitoring | ✅ ops_agent, cost widget | P21 comprehensive cost agent |
+| RAGAS eval script | ✅ `test_ragas.py` local | CI gate + Aurora persist (P17) |
+| Synthesizer | ❌ | P3 commentary layer |
+| Quant MCP / charts | ❌ | P13 |
+| RL agent weights | ❌ Table only | P8 |
+| Trading floor intelligence | ❌ Table only | P14 ingest |
+| LangSmith / LangGraph | ❌ | P22–P23 (spec) |
+| Agentic RAG | ❌ | P24 (spec) |
+| RIA white-label | ❌ | `RIA.md` spec |
+| Dashboard rec approval | ❌ | P1.5 |
+
+---
+
+### 34.3 User-facing application surfaces
+
+| Route | Page | Purpose | Auth |
+|-------|------|---------|------|
+| `/` | Landing | Marketing, sign-in CTA | Public |
+| `/dashboard` | Dashboard | Portfolio digests, cost widget, holdings summary | Clerk |
+| `/research` | Alex Chat | **Primary** — unified chat with router badges | Clerk |
+| `/portfolio` | Portfolio | Holdings CRUD, live prices | Clerk |
+| `/trading` | Trading Floor | Run debate, trade log, toggle, reset context | Clerk |
+| `/observe` | Observability | Cost, latency, guardrails, health | Clerk |
+| `/history` | History | Past research sessions | Clerk |
+| `/charts` | Charts | Market charts | Clerk |
+| `/retirement` | Retirement | Retirement planning tool | Clerk |
+| `/sign-in`, `/sign-up` | Auth | Clerk authentication | Public |
+
+**Key components:** `AlexChat.tsx`, `AlexMarkdown.tsx`, `OpsCostWidget.tsx`, `TradingRecommendations.tsx` (stub P1.5).
+
+---
+
+### 34.4 Chat intelligence — five live routes
+
+| Route | Trigger examples | Handler | Model |
+|-------|------------------|---------|-------|
+| **chat** | Greetings, bond education, off-topic | `/research/conversation/stream` | Nova Lite |
+| **fast** | NVDA price, latest news, ticker research | `/research/stream` | Nova Lite + tools |
+| **deep** (mcp) | 10-K, 8-K, SEC filings | `/research/deep/stream` | Nova Pro + MCP |
+| **deep** (parallel) | NVDA vs AMD compare | Planner + SQS + synthesis | Nova Pro |
+| **debater** | RSI, bear case, Fed, risk sizing | `/research/debater/stream` | Nova Pro/Lite per agent |
+
+**Router file:** `backend/researcher/query_router.py` — regex-first, Nova Lite fallback for ambiguous live-research queries.
+
+**Debater specialists:** Marcus (growth), Victoria (bear), Zara (quant), Reid (macro), Elena (risk).
+
+---
+
+### 34.5 Backend services inventory
+
+#### ECS researcher (`backend/researcher/`)
+
+| File | Role |
+|------|------|
+| `server.py` | FastAPI — all `/research/*` endpoints, SSE streaming |
+| `query_router.py` | Intent classification, guardrails |
+| `debater_registry.py` | Specialist pattern matching |
+| `debater_handoff.py` | Single-agent chat handoff |
+| `tools.py` | `function_tool` — yfinance, SEC, ingest |
+| `mcp_servers.py` | Playwright MCP for deep research |
+| `context_service.py` | RAG context (6 use cases; P0 bugs fixed) |
+| `prompts.py` | Agent instruction templates |
+| `latency_tracker.py` | Per-query metrics → Aurora |
+
+**Dependencies (`pyproject.toml`):** FastAPI, `openai-agents==0.0.11`, boto3, litellm, yfinance, edgartools — **no LangChain/LangGraph yet**.
+
+#### Lambda agents (`backend/agents/`)
+
+| Function | Handler | Trigger |
+|----------|---------|---------|
+| `alex-scheduler` | `scheduler.py` | EventBridge every 2h |
+| `alex-planner` | `planner.py` | Scheduler invoke |
+| `alex-tagger` | `tagger.py` | SQS research-queue |
+| `alex-reporter` | `reporter.py` | SQS results-queue |
+| `alex-trading-orchestrator` | `orchestrator.py` | API / EventBridge |
+| `alex-debate-agent` | `debate_agent.py` | SQS trading-queue |
+| `alex-ops-agent` | `ops_agent.py` | EventBridge 30min |
+| `alex-cost-monitor` | `cost_monitor.py` | EventBridge daily |
+
+#### Trading floor (`backend/agents/trading/`)
+
+| Component | Role |
+|-----------|------|
+| `core/debate_engine.py` | 6-agent parallel vote + Executor synthesis |
+| `core/orchestrator.py` | Portfolio tickers → SQS debate messages |
+| `agents/*.py` | Marcus, Victoria, Zara, Reid, Elena personas |
+| `tools/market_data.py` | yfinance, Fear & Greed, optional Polygon/Alpha Vantage |
+
+#### Ingest (`backend/ingest/`)
+
+| File | Role |
+|------|------|
+| `ingest_pgvector.py` | SageMaker embed → Aurora `research_vectors` |
+| `ingest.py` | API Gateway handler routing |
+
+---
+
+### 34.6 Frontend API routes (22 handlers)
+
+| API | Method | Purpose |
+|-----|--------|---------|
+| `/api/alex/chat` | POST | **Unified chat SSE** (primary) |
+| `/api/alex/session` | GET/POST | Session metadata |
+| `/api/research/*` | POST | Legacy fast/deep/stream (deprecated paths) |
+| `/api/trading` | GET | Trade history |
+| `/api/trading/run` | POST | Trigger debate |
+| `/api/trading/toggle` | POST | Global + per-user trading on/off |
+| `/api/trading/reset` | POST | Debate context reset |
+| `/api/portfolio` | GET/POST | Holdings |
+| `/api/portfolio/prices` | POST | Live prices |
+| `/api/portfolio-research` | GET | Digest cards |
+| `/api/observe` | GET | Observability data |
+| `/api/costs` | GET | Cost snapshots |
+| `/api/ops` | GET | Ops agent status |
+| `/api/search` | POST | Vector search proxy |
+| `/api/history` | GET | Research history |
+| `/api/suggestions` | GET | Proactive chips |
+| `/api/auto-research` | GET | Auto research trigger |
+| `/api/retirement` | POST | Retirement tool |
+| `/api/users/sync` | POST | Clerk → Aurora user upsert |
+
+---
+
+### 34.7 Data layer — Aurora PostgreSQL + pgvector
+
+**24+ tables** managed by `scripts/aurora_warmup.py`:
+
+| Group | Tables | Status |
+|-------|--------|--------|
+| **Users & chat** | `users`, `chat_sessions`, `session_metadata`, `research_sessions` | ✅ Active |
+| **Vectors & RAG** | `research_vectors`, `rag_attributions`, `research_snapshots` | ✅ Active; chunking limited |
+| **Portfolio** | `portfolios`, `portfolio_digests` | ✅ Active |
+| **Trading** | `trading_simulations`, `simulated_trades`, `agent_positions`, `trading_daily_pnl`, `user_trading_config`, `agent_performance` | ✅ Tables live; P&L/RL/config mostly unused |
+| **Intelligence stores** | `trading_floor_intelligence`, `quant_snapshots`, `scout_candidates` | 🔲 Scaffolded, empty |
+| **Observability** | `agent_observations`, `query_latency_metrics`, `ops_snapshots`, `cost_snapshots`, `cost_alerts`, `ragas_evaluations` | ✅ Partially populated |
+| **Knowledge graph** | `knowledge_graph_entities`, `knowledge_graph_relationships` | 🔲 Schema only |
+| **Events** | `trading_events`, `rl_weights` | 🔲 Schema only |
+
+**Embeddings:** SageMaker Serverless `alex-embedding` (all-MiniLM-L6-v2, 384-dim) → pgvector.
+
+---
+
+### 34.8 AWS infrastructure (Terraform)
+
+| Module | Resources |
+|--------|-----------|
+| `0_vpc` | VPC, subnets, security groups |
+| `1_permissions` | IAM roles/policies |
+| `2_sagemaker` | Embedding endpoint |
+| `3_ingestion` | API Gateway + ingest Lambda |
+| `4_researcher` | ECS Fargate, ALB, ECR |
+| `5_database` | Aurora Serverless v2 + pgvector |
+| `6_agents` | Planner, tagger, reporter, scheduler, ops, cost Lambdas |
+| `7_guardrails` | Bedrock guardrail |
+| `9_trading_floor` | Trading orchestrator, debate agent, SQS, EventBridge, SSM |
+
+**Messaging:** SQS — `alex-research-queue`, `alex-results-queue`, `alex-trading-queue`, `alex-frontend-results`.
+
+**Schedules:** Portfolio research 2h; ops 30min; cost monitor daily; trading (permission exists, schedule optional).
+
+**Policy:** All durable AWS changes via Terraform only (CL-007).
+
+---
+
+### 34.9 Autonomous pipelines (live)
+
+```
+EventBridge (2h) → alex-scheduler
+  → alex-planner (per user portfolio, dimension rotation)
+  → SQS alex-research-queue
+  → alex-tagger → alex-reporter (ECS fast/deep)
+  → portfolio_digests UPSERT
+  → dashboard cards
+```
+
+**Manual trading pipeline:**
+
+```
+/trading Run Analysis → alex-trading-orchestrator
+  → SQS alex-trading-queue (per ticker)
+  → alex-debate-agent → debate_engine.run_debate()
+  → simulated_trades INSERT (advisory — positions not updated)
+```
+
+---
+
+### 34.10 Test & verification suite
+
+| Script | Coverage |
+|--------|----------|
+| `scripts/test_p0.sh` | 51 foundation checks |
+| `scripts/tests/test_p0_foundation.py` | Schema, static regressions |
+| `scripts/tests/test_p1_router.py` | 32 router classification tests |
+| `scripts/tests/test_ragas.py` | 5-query RAG quality benchmark |
+| `scripts/tests/test_multi_agent.py` | Planner/reporter |
+| `scripts/tests/test_planner.py` | Task decomposition |
+| `scripts/test_trading.sh` | Trading E2E smoke |
+| `scripts/health_check.sh` | Full platform health |
+| `scripts/aurora_warmup.py` | DDL + P0 column verification |
+
+**CI:** `.github/workflows/ci.yml` — P0 static on PR; `deploy_researcher.yml`, `deploy_agents.yml` on push.
+
+---
+
+### 34.11 Documentation ecosystem (June 2026)
+
+| Document | Role |
+|----------|------|
+| `Alex_report.md` | **This file** — complete platform report + §33 change log |
+| `Alex_Master_Implementation_Plan.md` | Unified P0–P24 phase order, LangChain, Agentic RAG |
+| `Alex_AI_2.0.md` | Conversational AI vision, RAG, synthesizer |
+| `Alex_chat_intelligence.md` | Chat routing upgrades (edu, PDF, earnings, debaters) |
+| `Alex_Trading_Floor_2.0.md` | Trading simulation, RL, tools-only, tagger |
+| `Agentic_Usecase.md` | Agentic use cases on **current** live stack |
+| `usecases.md` | Cross-industry use cases, startups, Ophelia projects |
+| `RIA.md` | RIA Copilot white-label spec |
+| `DM_apply.md` | LinkedIn outreach templates + results log |
+| `Ophelia.md` | Execution-layer interview prep |
+| `Startup.md` | Business model, pricing, unit economics |
+| `P0_report.md` | P0 foundation completion report |
+
+---
+
+### 34.12 Operational state — session lifecycle
+
+| Component | `stop_session.sh` | `start_session.sh` | Always-on cost |
+|-----------|-------------------|---------------------|----------------|
+| SageMaker embedding | Destroyed | Recreated (~3 min) | ~$0 when destroyed |
+| ECS + ALB + ECR | Destroyed | Recreated + image push | ~$0 when destroyed |
+| Aurora Serverless | **Kept** | Warm-up script | ~$0.11/day min |
+| Lambdas, SQS, EventBridge | **Kept** | Scheduler re-enabled | Minimal |
+| Vercel frontend | **Kept** | N/A | Free tier |
+
+**Session commands:**
+
+```bash
+bash scripts/start_session.sh   # Spin up SageMaker + ECS + enable schedulers
+bash scripts/stop_session.sh    # Tear down paid compute; keep Aurora/Lambdas
+```
+
+**Known issue (June 15, 2026):** Docker ECR push intermittently fails (`broken pipe` via Docker Desktop proxy on layers `dfd500c8af61`, `3979ad62a530`). ECS cannot serve traffic until `alex-researcher:latest` exists in ECR. **Workaround:** push with proxy disabled (`NO_PROXY=*.amazonaws.com`) or fix Docker Desktop networking.
+
+**When ECS healthy:** `curl http://<ALB>/health` → `{"status":"healthy"}`.
+
+**Current ALB:** `http://alex-alb-1816782403.us-east-1.elb.amazonaws.com` (SSM `/alex/ecs_url`).
+
+---
+
+### 34.13 Approved specs awaiting implementation (priority order)
+
+Per user-approved step-by-step sequence:
+
+| Step | Phase | Spec | Est. |
+|------|-------|------|------|
+| 1 | P0 + session | ✅ Done | — |
+| 2 | P4 paper trade executor | `Alex_Trading_Floor_2.0.md` P1 | 3–5 days |
+| 3 | P3-lite context bridge | Trading reads digests + vectors | 2–3 days |
+| 4 | P5 autonomous trading schedule | EventBridge debate loop | 2–3 days |
+| 5 | P7-min tools gateway | Idempotent mutations | 1–2 weeks |
+| 6 | P5.5 Tagger agent | Observability labels | 1 week |
+| 7 | P13 + P14 | Quant + debate memory vectors | 2 weeks |
+
+**Parallel spec tracks (not yet approved for code):**
+
+- `Alex_chat_intelligence.md` C1–C6 (edu fast search, PDF, earnings agent)
+- `Alex_Master_Implementation_Plan.md` P22–P24 (LangSmith, LangGraph, Agentic RAG)
+- `RIA.md` R0–R4 (advisor white-label)
+- P21 comprehensive cost agent
+
+---
+
+### 34.14 Technology stack summary (current)
+
+| Layer | Technology |
+|-------|------------|
+| Frontend | Next.js 14, React, Tailwind, Clerk auth, Vercel |
+| API bridge | Next.js API routes → ECS ALB (SSE proxy) |
+| Agent runtime | OpenAI Agents SDK 0.0.11 + LiteLLM → Bedrock Nova |
+| Models | Nova Lite (router, chat, fast, Elena); Nova Pro (deep, debate) |
+| Embeddings | SageMaker Serverless all-MiniLM-L6-v2 |
+| Vector DB | Aurora pgvector (384-dim) |
+| Tools | yfinance, EdgarTools, Playwright MCP |
+| IaC | Terraform 9 modules |
+| CI/CD | GitHub Actions + `deploy.sh` / `deploy_trading.sh` |
+| **Not yet** | LangChain, LangGraph, LangSmith (P22–P24 spec) |
 
 ---
 
@@ -1892,4 +2745,4 @@ ai_financial_advisor/
 
 ---
 
-*This report reflects the codebase as deployed and tested on June 14, 2026. For living roadmap details see `Alex_Master_Implementation_Plan.md`, `Alex_AI_2.0.md`, `Alex_Trading_Floor_2.0.md`, and `Startup.md`.*
+*This report reflects the Alex codebase and documentation as of **June 15, 2026**. Authoritative current-state inventory: [§34](#34-current-application-state--authoritative-snapshot-june-15-2026). Living roadmap: `Alex_Master_Implementation_Plan.md`, `Alex_AI_2.0.md`, `Alex_Trading_Floor_2.0.md`, `Alex_chat_intelligence.md`. **All changes must be logged in §33.***

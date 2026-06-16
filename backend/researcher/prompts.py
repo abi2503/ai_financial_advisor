@@ -39,6 +39,7 @@ Rules:
 - Use ONLY get_stock_data for data — never invent prices
 - One tool call maximum unless user asks about multiple tickers
 - No SEC filings in fast mode
+- If CONVERSATION HISTORY or ACTIVE TICKER is set, research THAT ticker — never switch to a different symbol from portfolio context
 """
 
 
@@ -266,103 +267,70 @@ YOUR TOOLS
    → Then return COMPLETE analysis
 
 ═══════════════════════════════════════
-RESEARCH SEQUENCE
+SCOPED RESEARCH — CRITICAL
 ═══════════════════════════════════════
 
-STEP 1: get_sec_filings(ticker, "10-K")
-        → Risk factors + MD&A + business
+A SCOPED RESEARCH DIRECTIVE is appended to these instructions.
+It tells you EXACTLY which tools to call and which sections to return.
+Follow the scope directive — it overrides any default sequence below.
 
-STEP 2: get_sec_filings(ticker, "4")
-        → Insider trading activity
+RULES:
+- Answer ONLY what the user asked. Do NOT add extra sections.
+- "10-K" / "10k filing" → ONLY get_sec_filings(ticker, "10-K") — no analyst, no options, no Form 4
+- "8-K" / "8k filing" → ONLY get_sec_filings(ticker, "8-K")
+- "10-Q" → ONLY get_sec_filings(ticker, "10-Q")
+- "Form 4" / insider → ONLY get_sec_filings(ticker, "4")
+- Broad "SEC filings" / "EDGAR" / "SEC research" → full pipeline (10-K + Form 4 + analyst + options)
+- Otherwise → infer the minimum tools needed; do not run tools the user did not ask for
 
-STEP 3: browser_navigate to analyst ratings
-        https://www.marketbeat.com/stocks/NASDAQ/TICKER/
-        browser_snapshot → read upgrades/downgrades
-
-STEP 4: browser_navigate to options flow
-        https://unusualwhales.com/flow?ticker=TICKER
-        browser_snapshot → read unusual activity
-
-STEP 5: Write complete analysis
-
-STEP 6: ingest_financial_document to save
-
-STEP 7: Return FULL analysis to user
-
-CRITICAL: Complete ALL 4 data sources
-          Do NOT skip any step
-          Each step = exactly ONE tool call
-          Total turns budget: 10 turns max
+❌ NEVER include Insider Trading, Analyst Ratings, or Options Flow
+   unless the scope directive explicitly requires them.
+❌ NEVER add a BUY/HOLD/SELL recommendation unless scope allows it.
 
 ═══════════════════════════════════════
-OUTPUT FORMAT
+OUTPUT FORMATS (use only sections required by scope)
 ═══════════════════════════════════════
 
-**[Company] ([TICKER]) — Deep Research | {today}**
+**10-K only:**
+**[Company] ([TICKER]) — 10-K Analysis | {today}**
+**SEC 10-K Analysis** — Filing Date, Key Risk Factor, Management Outlook, Business Summary
+Sources: SEC EDGAR (EdgarTools) | {today}
 
----
+**8-K only:**
+**[Company] ([TICKER]) — 8-K Current Report | {today}**
+**SEC 8-K Analysis** — Filing Date, Event Type, Key Disclosures
+Sources: SEC EDGAR (EdgarTools) | {today}
 
-**SEC 10-K Analysis** *(Source: SEC EDGAR via EdgarTools)*
+**10-Q only:**
+**[Company] ([TICKER]) — 10-Q Quarterly Report | {today}**
+**SEC 10-Q Analysis** — Filing Date, Quarterly Highlights, MD&A summary
+Sources: SEC EDGAR (EdgarTools) | {today}
 
-- **Filing Date:** [date]
-- **Key Risk Factor:** [exact quote from risk_factors]
-- **Management Outlook:** [from MD&A section]
-- **Business Summary:** [from business section]
+**Form 4 / insider only:**
+**[Company] ([TICKER]) — Insider Trading (Form 4) | {today}**
+**Insider Trading** — Recent transactions, Signal (Bullish/Bearish/Neutral)
+Sources: SEC EDGAR Form 4 | {today}
 
----
-
-**Insider Trading** *(Source: SEC Form 4)*
-
-- [Recent transactions from Form 4]
-- **Signal:** Bullish/Bearish/Neutral — [why]
-
----
-
-**Analyst Ratings** *(Source: MarketBeat)*
-
-- [Recent upgrades/downgrades]
-- [Price target changes]
-- **Consensus:** [overall analyst view]
-
----
-**Options Flow** *(Source: UnusualWhales)*
-
-- [Large options bets with expiry and size]
-- [Put/Call ratio]
-- **Signal:** Bullish/Bearish/Neutral — [why]
-
----
-
-**Deep Analysis**
-
-- **Hidden Risks:** [from 10-K footnotes/MD&A]
-- **Insider Sentiment:** [what Form 4 signals]
-- **Analyst Momentum:** [upgrade/downgrade trend]
-- **Key Catalyst:** [what could move stock]
-
----
-
-**Recommendation:** BUY / HOLD / SELL
-
-**Reasoning:** [based on SEC data + analyst ratings]
-
----
-
-> ⚠️ This is research not financial advice.
-> Sources: SEC EDGAR (EdgarTools) + MarketBeat | {today}
+**Full SEC deep research:**
+Use all sections: SEC 10-K, Insider Trading, Analyst Ratings, Options Flow, Deep Analysis, Recommendation
 
 ═══════════════════════════════════════
 CRITICAL RULES
 ═══════════════════════════════════════
 
-✅ ALWAYS use get_sec_filings first
-✅ ALWAYS include actual quotes from filings
-✅ ALWAYS return complete analysis
-✅ ALWAYS call ingest before returning
+✅ ALWAYS use get_sec_filings for SEC data (correct form_type per scope)
+✅ ALWAYS include actual quotes from filings when SEC is in scope
+✅ Return ONLY the sections required by the scope directive
+✅ Call ingest before returning (when analysis is substantive)
 
 ❌ NEVER use Playwright for SEC filings
 ❌ NEVER make up filing content
 ❌ NEVER return just confirmation message
+❌ NEVER skip get_sec_filings because prior research exists in context
+❌ NEVER add analyst/options/insider sections unless scope requires them
+
+PRIOR RESEARCH in context is reference only — always fetch fresh SEC data
+and return the complete formatted analysis to the user.
 
 ═══════════════════════════════════════
 YOUR TOOLS AND STRICT RULES
@@ -386,6 +354,7 @@ YOUR TOOLS AND STRICT RULES
 
 3. ingest_financial_document(content, topic)
    → Call LAST after writing full analysis
+   → Your final message to the user MUST be the full analysis — NOT the ingest confirmation
 
 ═══════════════════════════════════════
 BLOCKED URLS — NEVER NAVIGATE THESE WHEN USING PLAYWRIGHT MCP SERVER
@@ -402,3 +371,77 @@ BLOCKED URLS — NEVER NAVIGATE THESE WHEN USING PLAYWRIGHT MCP SERVER
    unusualwhales.com/flow?ticker=TICKER
    fool.com/earnings/call-transcripts/
 """
+
+
+def build_deep_scope_directive(scope) -> str:
+    """Append per-query scope so the agent answers only what was asked."""
+    today = datetime.now().strftime("%B %d, %Y")
+    lines = [
+        "═══════════════════════════════════════",
+        "SCOPED RESEARCH DIRECTIVE — FOLLOW EXACTLY",
+        "═══════════════════════════════════════",
+        f"Scope: {scope.scope} — {scope.label}",
+        "",
+        "TOOLS TO CALL:",
+    ]
+
+    if scope.sec_forms:
+        for form in scope.sec_forms:
+            lines.append(f"  ✅ get_sec_filings(ticker, \"{form}\")")
+    else:
+        lines.append("  ⛔ Do NOT call get_sec_filings")
+
+    if scope.use_analyst_browser:
+        lines.append("  ✅ browser → marketbeat.com/stocks/NASDAQ/TICKER/")
+    else:
+        lines.append("  ⛔ Do NOT fetch analyst ratings")
+
+    if scope.use_options_browser:
+        lines.append("  ✅ browser → unusualwhales.com/flow?ticker=TICKER")
+    else:
+        lines.append("  ⛔ Do NOT fetch options flow")
+
+    lines.append("")
+    lines.append("SECTIONS TO RETURN (only these — omit everything else):")
+
+    section_map = {
+        "filing_10k":   ["SEC 10-K Analysis"],
+        "filing_8k":    ["SEC 8-K Analysis"],
+        "filing_10q":   ["SEC 10-Q Analysis"],
+        "filing_form4": ["Insider Trading (Form 4)"],
+        "analyst_only": ["Analyst Ratings"],
+        "options_only": ["Options Flow"],
+        "sec_full":     [
+            "SEC 10-K Analysis", "Insider Trading", "Analyst Ratings",
+            "Options Flow", "Deep Analysis", "Recommendation",
+        ],
+    }
+    sections = section_map.get(scope.scope, [])
+    if scope.scope == "inferred":
+        if scope.sec_forms == ["10-K"]:
+            sections = ["SEC 10-K Analysis"]
+        elif scope.sec_forms == ["8-K"]:
+            sections = ["SEC 8-K Analysis"]
+        elif scope.sec_forms == ["10-Q"]:
+            sections = ["SEC 10-Q Analysis"]
+        elif scope.sec_forms == ["4"]:
+            sections = ["Insider Trading (Form 4)"]
+        else:
+            sections = [f"SEC {f} Analysis" for f in scope.sec_forms]
+        if scope.use_analyst_browser:
+            sections.append("Analyst Ratings")
+        if scope.use_options_browser:
+            sections.append("Options Flow")
+
+    for s in sections:
+        lines.append(f"  • {s}")
+
+    if scope.include_recommendation and "Recommendation" not in sections:
+        lines.append("  • Recommendation")
+
+    lines += [
+        "",
+        f"Today: {today}",
+        "Return ONLY the sections listed above. No extra headings. No BUY/HOLD/SELL unless Recommendation is listed.",
+    ]
+    return "\n".join(lines)
