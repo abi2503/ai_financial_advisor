@@ -106,6 +106,7 @@ LIVE_RESEARCH_SIGNALS = [
     "right now", "latest news", "news on", "earnings", "outlook", "should i buy",
     "should i sell", "research on", "analyze ", "brief ", "update on", "what is happening",
     "how is .* doing", "performance of",
+    r"\b(ceo|cfo|cto|coo|chief executive|chief financial|founder|who runs|who leads)\b",
 ]
 
 # Actionable / risky trading intent — flag, do not research or advise
@@ -637,6 +638,15 @@ def _is_educational_finance(query: str) -> bool:
     return _has_finance_topic(query)
 
 
+def _is_leadership_query(query: str) -> bool:
+    """User asks who runs the company — CEO, CFO, founder, etc."""
+    return bool(re.search(
+        r"\b(ceo|cfo|cto|coo|chief executive|chief financial|founder|who runs|who leads|"
+        r"who is the (ceo|cfo|president|chairman)|executive team|leadership)\b",
+        query.lower(),
+    ))
+
+
 def _needs_live_research(query: str) -> bool:
     """Ticker-specific or explicit live market research — not general education."""
     tickers = _extract_tickers(query)
@@ -700,10 +710,16 @@ def _regex_route(query: str) -> RouteDecision:
         )
 
     if _needs_live_research(q):
+        intent = "leadership" if _is_leadership_query(q) else "market_research"
+        reasoning = (
+            "Executive leadership lookup — Fast Research."
+            if intent == "leadership"
+            else "Live market data and news — Fast Research."
+        )
         return RouteDecision(
-            route="fast", intent="market_research",
+            route="fast", intent=intent,
             entities=tickers,
-            reasoning="Live market data and news — Fast Research.",
+            reasoning=reasoning,
             confidence=0.88,
         )
 
@@ -902,7 +918,8 @@ def classify_query(query: str, context_hint: str = "") -> RouteDecision:
             decision.entities = merged
             return decision
         return rx if rx.route == "fast" else RouteDecision(
-            route="fast", intent="market_research",
+            route="fast",
+            intent="leadership" if _is_leadership_query(query) else "market_research",
             entities=entities or _extract_tickers(query),
             reasoning="Live stock research.",
             confidence=0.85,

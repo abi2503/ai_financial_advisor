@@ -936,11 +936,17 @@ async def research_stream(request: ResearchRequest):
             ctx_t0       = time.time()
             context      = get_context(topic, user_id, session_id, fast=True)
             tracker.mark_context_ms(int((time.time() - ctx_t0) * 1000))
-            from query_router import enrich_follow_up_query
+            from query_router import enrich_follow_up_query, _is_leadership_query
             enriched, _  = enrich_follow_up_query(topic, context)
             work_topic   = enriched
             instructions = get_fast_agent_instructions()
             ticker_hint  = _active_ticker_directive(work_topic, context=context)
+            if _is_leadership_query(work_topic):
+                instructions += (
+                    "\n\nLEADERSHIP QUERY: Answer who holds the role using KEY PEOPLE "
+                    "from get_stock_data. Do NOT return the full market data table.\n"
+                )
+                yield f"data: {json.dumps({'type': 'reasoning', 'content': '👤 Looking up company leadership...'})}\n\n"
             if context:
                 instructions += f"\n\n{context}"
                 yield f"data: {json.dumps({'type': 'reasoning', 'content': '🧠 Loading your portfolio context...'})}\n\n"

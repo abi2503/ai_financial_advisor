@@ -11,6 +11,23 @@ from query_trace import record_tool, record_api, get_trace
 
 logger = logging.getLogger(__name__)
 
+
+def format_company_leadership(info: dict, max_officers: int = 5) -> str:
+    """Format KEY PEOPLE block from yfinance companyOfficers."""
+    officers = info.get("companyOfficers") or []
+    if not officers:
+        return "KEY PEOPLE:\n- Not available from Yahoo Finance"
+    lines: list[str] = []
+    for officer in officers[:max_officers]:
+        name  = (officer.get("name") or "").strip()
+        title = (officer.get("title") or "").strip()
+        if name and title:
+            lines.append(f"- {name} — {title}")
+    if not lines:
+        return "KEY PEOPLE:\n- Not available from Yahoo Finance"
+    return "KEY PEOPLE:\n" + "\n".join(lines)
+
+
 @function_tool
 async def get_sec_filings(ticker: str, form_type: str = "10-K") -> str:
     """
@@ -111,8 +128,8 @@ async def get_sec_filings(ticker: str, form_type: str = "10-K") -> str:
 @function_tool
 async def get_stock_data(ticker: str) -> str:
     """
-    Get real-time stock data AND recent news for a ticker.
-    Uses Yahoo Finance API for metrics and RSS for news.
+    Get real-time stock data, key executives, AND recent news for a ticker.
+    Uses Yahoo Finance API for metrics/officers and RSS for news.
     Call this once per stock you are researching.
 
     Args:
@@ -173,6 +190,12 @@ async def get_stock_data(ticker: str) -> str:
         if isinstance(margins,   float):        margins   = f"{margins*100:.2f}%"
         if isinstance(pe_ratio,  float):        pe_ratio  = f"{pe_ratio:.2f}x"
         if isinstance(fwd_pe,    float):        fwd_pe    = f"{fwd_pe:.2f}x"
+        if isinstance(target,    (int, float)): target    = f"{target:.2f}"
+        if isinstance(price,     (int, float)): price     = f"{price:.2f}"
+        if isinstance(week_high,  (int, float)): week_high = f"{week_high:.2f}"
+        if isinstance(week_low,   (int, float)): week_low  = f"{week_low:.2f}"
+
+        leadership = format_company_leadership(info)
 
         # If we couldn't get price show clear message
         yf_ok = price != 'N/A'
@@ -260,6 +283,8 @@ Profit Margins: {margins}
 Annual Revenue: {revenue}
 Analyst Rating: {analyst}
 Analyst Target: ${target}
+
+{leadership}
 
 RECENT NEWS:
 {news_text}

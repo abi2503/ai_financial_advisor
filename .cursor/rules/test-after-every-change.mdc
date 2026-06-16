@@ -1,0 +1,43 @@
+---
+description: After every implementation — automated tests, deploy, then step-by-step frontend verification with user oversight
+alwaysApply: true
+---
+
+# Test After Every Addition
+
+No change is done until all three layers pass. **User oversees frontend steps** — present checkpoints, wait for Pass/Fail before continuing.
+
+## Order (every time)
+
+1. **Implement** — minimal diff only
+2. **Automated tests** — run the phase script; fix failures before deploy
+3. **Deploy** — only services touched (see `scripts/deploy_*.sh`)
+4. **Frontend playbook** — walk user through `scripts/TEST_PLAYBOOK.md` one checkpoint at a time
+5. **Explain** — what broke, what we fixed, what it unblocks
+
+## Automated commands (agent runs)
+
+| Touched area | Run |
+|--------------|-----|
+| P0 / foundation | `./scripts/test_p0.sh` |
+| Trading | `./scripts/test_trading.sh` |
+| RAG / ingest | `python3 scripts/tests/test_ragas.py` |
+| CI-safe only | `./scripts/test_p0.sh --static` |
+
+## Deploy commands (agent runs when backend changed)
+
+- Researcher: `cd backend/researcher && bash deploy.sh`
+- Ingest: `bash scripts/deploy_ingest.sh`
+- Trading: `bash scripts/deploy_trading.sh`
+
+## Frontend protocol (user oversees)
+
+After deploy, give **one phase at a time** from `scripts/TEST_PLAYBOOK.md`:
+- Prep → Dashboard → Fast Research → Deep Research → Trading
+- Each step: what to do, pass criteria, what it proves
+- End each phase with: *"Checkpoint N — reply Pass/Fail + what you saw"*
+- Do **not** start the next implementation until user confirms or you fix failures
+
+## On failure
+
+Agent diagnoses (logs, curl, test script), fixes, re-runs automated layer, then re-presents only the failed frontend step.

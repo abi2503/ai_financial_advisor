@@ -314,6 +314,27 @@ def test_trading_education():
             fail(q, f"route={d.route} intent={d.intent}")
 
 
+def test_leadership_routing():
+    print("\n── P1 leadership / CEO queries ──")
+    d = classify_query("CEO of TSLA")
+    if d.route == "fast" and d.intent == "leadership" and d.entities and d.entities[0] == "TSLA":
+        ok('"CEO of TSLA" → fast leadership with TSLA')
+    else:
+        fail("CEO of TSLA", f"route={d.route} intent={d.intent} entities={d.entities}")
+
+    d2 = classify_query("who is the CFO of NVDA")
+    if d2.route == "fast" and d2.intent == "leadership" and "NVDA" in d2.entities:
+        ok('"who is the CFO of NVDA" → fast leadership')
+    else:
+        fail("CFO NVDA", f"route={d2.route} intent={d2.intent} entities={d2.entities}")
+
+    d3 = classify_query("NVDA price today")
+    if d3.route == "fast" and d3.intent == "market_research":
+        ok('"NVDA price today" still → market_research (not leadership)')
+    else:
+        fail("NVDA price", f"route={d3.route} intent={d3.intent}")
+
+
 def test_llm_finance_gate_unknown_concepts():
     """Obscure finance terms hit LLM gate — no new regex per concept."""
     print("\n── P1 LLM finance gate (unknown concepts) ──")
@@ -352,6 +373,7 @@ def main():
     test_research_scope()
     test_sec_conceptual_education()
     test_trading_education()
+    test_leadership_routing()
     test_llm_finance_gate_unknown_concepts()
     test_routing_steps()
     print("\n" + "=" * 50)

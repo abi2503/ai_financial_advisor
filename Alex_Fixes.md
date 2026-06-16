@@ -33,6 +33,7 @@
 | FIX-010 | 2026-06-15 | "explain stop loss?" canned as off-topic | ✅ Fixed + deployed |
 | FIX-011 | 2026-06-16 | LLM finance gate for ambiguous education (no regex sprawl) | ✅ Fixed + deployed |
 | FIX-012 | 2026-06-16 | Vague follow-up after insider/SEC research → deep not chat | ✅ Fixed + deployed |
+| FIX-013 | 2026-06-16 | CEO/leadership queries return officers, not market snapshot | ✅ Fixed (pending ECS deploy) |
 
 ### Report cross-reference
 
@@ -46,6 +47,7 @@
 | FIX-010 | **CL-024** in `Alex_report.md` §33 | ECS — 2026-06-16 00:00 UTC (approx) |
 | FIX-011 | **CL-025** in `Alex_report.md` §33 | ECS — 2026-06-16 |
 | FIX-012 | **CL-026** in `Alex_report.md` §33 | ECS — 2026-06-16 00:14 UTC |
+| FIX-013 | **CL-028** in `Alex_report.md` §33 | ECS — pending |
 
 ---
 
@@ -510,6 +512,47 @@ After *"insider trade details for AMD"* (Form 4 + accession `0000002488-26-00010
 
 ---
 
+## FIX-013 — CEO/leadership queries return market snapshot, not answer
+
+### Problem
+Query: *"CEO of TSLA"*  
+Router chose Fast Research correctly, but response was a full price/news table — **never named Elon Musk or any CEO**.
+
+### Root cause
+1. `get_stock_data` did not include `companyOfficers` from yfinance (data was available)
+2. Fast agent prompt always forced full analysis template regardless of question type
+3. Analyst target printed with excessive precision (`$420.54633`)
+
+### Fix
+| Piece | Behavior |
+|-------|----------|
+| `format_company_leadership()` | KEY PEOPLE block from yfinance `companyOfficers` |
+| `get_stock_data` | Includes CEO/CFO/officers; rounds price/target to 2 decimals |
+| Fast prompt | Question-first: narrow factual vs broad research templates |
+| `_is_leadership_query()` | Router intent `leadership` for CEO/CFO/founder queries |
+| Fast stream | Leadership hint + "👤 Looking up company leadership..." reasoning step |
+
+### Test queries
+| Query | Expected |
+|-------|----------|
+| `CEO of TSLA` | fast / leadership / TSLA → names CEO from KEY PEOPLE |
+| `who is the CFO of NVDA` | fast / leadership / NVDA |
+| `NVDA price today` | fast / market_research (unchanged) |
+
+### Files edited
+| File | Change |
+|------|--------|
+| `backend/researcher/tools.py` | `format_company_leadership`, KEY PEOPLE in tool output |
+| `backend/researcher/prompts.py` | Question-first fast mode instructions |
+| `backend/researcher/query_router.py` | `_is_leadership_query`, `leadership` intent |
+| `backend/researcher/server.py` | Leadership hint in fast stream |
+| `scripts/tests/test_p1_router.py` | Leadership routing tests |
+
+### Verification
+- `python3 scripts/tests/test_p1_router.py` — 65/65 pass
+
+---
+
 ## Deploy log
 
 | Date (UTC) | Image digest (short) | Notes |
@@ -557,3 +600,4 @@ After *"insider trade details for AMD"* (Form 4 + accession `0000002488-26-00010
 | 2026-06-15 | Cursor Agent | FIX-010: explain stop loss canned off-topic → education |
 | 2026-06-16 | Cursor Agent | FIX-011: LLM finance gate — scalable education routing |
 | 2026-06-16 | Cursor Agent | FIX-012: vague follow-up after insider/SEC → deep Form 4 |
+| 2026-06-16 | Cursor Agent | FIX-013: CEO/leadership queries — KEY PEOPLE + question-first fast |
