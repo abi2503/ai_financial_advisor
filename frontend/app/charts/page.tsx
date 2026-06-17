@@ -27,8 +27,9 @@ interface Price {
 }
 
 const COLORS = [
-  '#3b82f6', '#10b981', '#f59e0b', '#ef4444',
-  '#8b5cf6', '#06b6d4', '#f97316', '#ec4899'
+  '#1e3a5f', '#6b8f71', '#c4a882', '#b87d7d', '#8b2942',
+  '#6b5b95', '#e07b39', '#d4a017', '#3d8b5f', '#8b6914',
+  '#5c6b8a', '#4a90a4', '#c9b896', '#e891a3', '#9ca3af',
 ]
 
 const assetClassColors: Record<string, string> = {
@@ -79,6 +80,73 @@ const BarTooltip = ({ active, payload }: any) => {
     )
   }
   return null
+}
+
+const TOP_HOLDINGS = 13
+
+interface TickerSlice {
+  name:    string
+  value:   number
+  percent: string
+  company: string
+  shares:  number
+}
+
+function buildTickerBreakdown(
+  positions: { ticker: string; company: string; value: number; shares: number }[],
+  totalValue: number,
+): TickerSlice[] {
+  const sorted = [...positions]
+    .filter(p => p.value > 0)
+    .sort((a, b) => b.value - a.value)
+
+  const top       = sorted.slice(0, TOP_HOLDINGS)
+  const rest      = sorted.slice(TOP_HOLDINGS)
+  const othersVal = rest.reduce((s, p) => s + p.value, 0)
+
+  const pct = (v: number) =>
+    totalValue > 0 ? ((v / totalValue) * 100).toFixed(2) : '0.00'
+
+  const data: TickerSlice[] = top.map(p => ({
+    name:    p.ticker,
+    value:   parseFloat(p.value.toFixed(2)),
+    percent: pct(p.value),
+    company: p.company,
+    shares:  p.shares,
+  }))
+
+  if (othersVal > 0) {
+    data.push({
+      name:    'Others',
+      value:   parseFloat(othersVal.toFixed(2)),
+      percent: pct(othersVal),
+      company: `${rest.length} smaller positions`,
+      shares:  0,
+    })
+  }
+  return data
+}
+
+const RADIAN = Math.PI / 180
+
+function TickerPieLabel(props: {
+  cx?: number; cy?: number; midAngle?: number
+  outerRadius?: number; percent?: number; name?: string
+}) {
+  const { cx = 0, cy = 0, midAngle = 0, outerRadius = 0, percent = 0, name = '' } = props
+  if (percent < 0.025) return null
+  const radius = outerRadius + 22
+  const x  = cx + radius * Math.cos(-midAngle * RADIAN)
+  const y  = cy + radius * Math.sin(-midAngle * RADIAN)
+  const anchor = x > cx ? 'start' : 'end'
+  return (
+    <text
+      x={x} y={y} fill="#d1d5db" textAnchor={anchor}
+      dominantBaseline="central" fontSize={11} fontWeight={500}
+    >
+      {`${name} ${(percent * 100).toFixed(2)}%`}
+    </text>
+  )
 }
 
 export default function ChartsPage() {
@@ -165,6 +233,8 @@ export default function ChartsPage() {
       value:     p.value,
     }))
     .sort((a, b) => b.changePct - a.changePct)
+
+  const tickerBreakdown = buildTickerBreakdown(positions, totalValue)
 
   if (loading) {
     return (
@@ -253,6 +323,97 @@ export default function ChartsPage() {
               )}
             </div>
           ))}
+        </div>
+
+        {/* Holdings Breakdown — per-ticker allocation donut */}
+        <div className="bg-gray-900 border border-gray-800 rounded-xl p-6 mb-6">
+          <div className="flex items-start justify-between mb-2">
+            <div>
+              <h2 className="font-semibold text-white">Holdings Breakdown</h2>
+              <p className="text-gray-500 text-xs mt-1">
+                Portfolio weight by ticker · top {TOP_HOLDINGS} shown individually
+              </p>
+            </div>
+            <span className="text-gray-500 text-xs">
+              {positions.length} position{positions.length !== 1 ? 's' : ''}
+            </span>
+          </div>
+
+          <div className="flex flex-col lg:flex-row items-center gap-8">
+            <div className="w-full lg:w-1/2">
+              <ResponsiveContainer width="100%" height={360}>
+                <PieChart>
+                  <Pie
+                    data={tickerBreakdown}
+                    cx="50%"
+                    cy="50%"
+                    innerRadius={72}
+                    outerRadius={118}
+                    paddingAngle={1.5}
+                    dataKey="value"
+                    labelLine={{ stroke: '#4b5563', strokeWidth: 1 }}
+                    label={TickerPieLabel}
+                  >
+                    {tickerBreakdown.map((entry, index) => (
+                      <Cell
+                        key={entry.name}
+                        fill={COLORS[index % COLORS.length]}
+                        stroke="#111827"
+                        strokeWidth={2}
+                      />
+                    ))}
+                  </Pie>
+                  <Tooltip content={<PieTooltip />} />
+                </PieChart>
+              </ResponsiveContainer>
+            </div>
+
+            <div className="w-full lg:w-1/2 max-h-80 overflow-y-auto pr-1">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-gray-500 text-xs border-b border-gray-800">
+                    <th className="text-left pb-2 font-medium">Ticker</th>
+                    <th className="text-right pb-2 font-medium">Value</th>
+                    <th className="text-right pb-2 font-medium">Weight</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {tickerBreakdown.map((row, i) => (
+                    <tr
+                      key={row.name}
+                      className="border-b border-gray-800/60 last:border-0"
+                    >
+                      <td className="py-2.5">
+                        <div className="flex items-center gap-2">
+                          <div
+                            className="w-2.5 h-2.5 rounded-full shrink-0"
+                            style={{ backgroundColor: COLORS[i % COLORS.length] }}
+                          />
+                          <div>
+                            <span className="text-white font-medium">{row.name}</span>
+                            {row.name !== 'Others' && row.company && (
+                              <p className="text-gray-600 text-xs truncate max-w-[140px]">
+                                {row.company}
+                              </p>
+                            )}
+                            {row.name === 'Others' && (
+                              <p className="text-gray-600 text-xs">{row.company}</p>
+                            )}
+                          </div>
+                        </div>
+                      </td>
+                      <td className="py-2.5 text-right text-gray-300 tabular-nums">
+                        ${row.value.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                      </td>
+                      <td className="py-2.5 text-right text-white font-medium tabular-nums">
+                        {row.percent}%
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
         </div>
 
         {/* Pie Charts */}

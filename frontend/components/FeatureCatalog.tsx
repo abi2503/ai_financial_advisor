@@ -1,10 +1,41 @@
 import Link from 'next/link'
-import { NEW_FEATURES, CORE_FEATURES } from '@/lib/featureData'
+import { NEW_FEATURES, CORE_FEATURES, TODAY_FEATURES, SHIP_DATE_LABEL } from '@/lib/featureData'
 import { FeatureTags } from '@/components/TagPills'
 
 export default function FeatureCatalog() {
   return (
     <>
+      <section className="mb-10">
+        <h2 className="text-xl font-bold text-white mb-1">Shipped {SHIP_DATE_LABEL}</h2>
+        <p className="text-gray-500 text-sm mb-6">
+          RAGAS eval, trading outcome scoring, market overview, charts breakdown
+        </p>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+          {TODAY_FEATURES.map((f) => (
+            <Link
+              key={f.title}
+              href={f.href}
+              className={`group p-5 border rounded-xl transition hover:scale-[1.01] ${f.accent} hover:border-opacity-60`}
+            >
+              <div className="flex items-start justify-between mb-3">
+                <div className="p-2 bg-gray-900/80 rounded-lg">{f.icon}</div>
+                <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/30">
+                  {f.badge}
+                </span>
+              </div>
+              <h3 className="text-white font-semibold mb-2 group-hover:text-blue-300 transition">
+                {f.title}
+              </h3>
+              <p className="text-gray-400 text-sm leading-relaxed">{f.desc}</p>
+              <FeatureTags ai={f.ai} stack={f.stack} section="new" />
+            </Link>
+          ))}
+        </div>
+        <Link href="/features" className="text-sm text-blue-400 hover:underline">
+          View full feature catalog →
+        </Link>
+      </section>
+
       <section className="mb-8">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {NEW_FEATURES.map((f) => (

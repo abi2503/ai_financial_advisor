@@ -2,13 +2,14 @@
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { UserButton } from '@clerk/nextjs'
-import { Brain, LayoutDashboard, MessageSquare, PieChart, History, BarChart2, Calculator, Telescope } from 'lucide-react'
+import { Brain, LayoutDashboard, MessageSquare, PieChart, History, BarChart2, Calculator, Telescope, Sparkles } from 'lucide-react'
 
 const navItems = [
   { href: '/dashboard',  label: 'Dashboard',  icon: LayoutDashboard },
   { href: '/research',   label: 'Research',   icon: MessageSquare },
   { href: '/portfolio',  label: 'Portfolio',  icon: PieChart },
   { href: '/charts',     label: 'Charts',     icon: BarChart2 },
+  { href: '/features',   label: 'Features',   icon: Sparkles },
   { href: '/retirement', label: 'Retirement', icon: Calculator },
   { href: '/history',    label: 'History',    icon: History },
   { href: '/observe',     label: 'Observe',    icon: Telescope },

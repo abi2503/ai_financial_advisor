@@ -109,6 +109,22 @@ LIVE_RESEARCH_SIGNALS = [
     r"\b(ceo|cfo|cto|coo|chief executive|chief financial|founder|who runs|who leads)\b",
 ]
 
+# Index names that look like tickers but mean broad market context
+_INDEX_CONTEXT_TICKERS = frozenset({"DOW", "DJI", "SPY", "QQQ", "IVV", "VOO"})
+
+MARKET_OVERVIEW_TOPIC = re.compile(
+    r"\b(markets?\b|stock market|indices|index|s&p|sp\s*500|dow\b|dow jones?|nasdaq|wall street)\b",
+    re.I,
+)
+MARKET_OVERVIEW_LIVE = re.compile(
+    r"\b("
+    r"today|tonight|this morning|this week|right now|currently|"
+    r"overview|summary|update|recap|performance|perform(ed|ing)?|"
+    r"how (did|have|are|is)|market close|closed|doing"
+    r")\b",
+    re.I,
+)
+
 # Actionable / risky trading intent — flag, do not research or advise
 POLICY_FLAG_PATTERNS: list[tuple[str, str]] = [
     (r"\b(i want|i wanna|i'm going|going to|want to|help me)\b.*\bshort\b", "risky_short_intent"),
@@ -156,6 +172,8 @@ NON_TICKER_WORDS = frozenset({
     "CAGR", "FCF", "EV", "ATH", "ATL", "RSI", "MACD", "YTD", "MTD",
     # Assistant / chat role labels — not tickers
     "ALEX", "USER",
+    # Common English words that appear as ALL CAPS in queries
+    "TODAY", "TONIGHT", "WEEK", "DAILY", "LIVE",
 })
 
 # Signals user wants live SEC data on a specific company — not conceptual education
@@ -625,6 +643,8 @@ def _is_social_query(query: str) -> bool:
 def _is_educational_finance(query: str) -> bool:
     if _is_policy_flag(query)[0]:
         return False
+    if _is_market_overview_query(query):
+        return False
     if _is_sec_conceptual_education(query):
         return True
     if _extract_tickers(query):
@@ -645,6 +665,33 @@ def _is_leadership_query(query: str) -> bool:
         r"who is the (ceo|cfo|president|chairman)|executive team|leadership)\b",
         query.lower(),
     ))
+
+
+def _is_market_overview_query(query: str) -> bool:
+    """
+    Broad market / indices performance today — not single-ticker or conceptual education.
+
+    Examples:
+      "overview of how markets performed today"  → True
+      "how did the Dow and S&P do today?"          → True
+      "what is the stock market"                   → False (education)
+      "NVDA price today"                           → False (has ticker)
+    """
+    if _is_sec_conceptual_education(query):
+        return False
+    lower = query.lower()
+    if not MARKET_OVERVIEW_TOPIC.search(lower):
+        return False
+    tickers = _extract_tickers(query)
+    if tickers and not all(t in _INDEX_CONTEXT_TICKERS for t in tickers):
+        return False
+    if MARKET_OVERVIEW_LIVE.search(lower):
+        return True
+    if re.search(r"\bmarket\s+(overview|summary|update)\b", lower):
+        return True
+    if re.search(r"\boverview\s+of\s+(the\s+)?markets?\b", lower):
+        return True
+    return False
 
 
 def _needs_live_research(query: str) -> bool:
@@ -721,6 +768,13 @@ def _regex_route(query: str) -> RouteDecision:
             entities=tickers,
             reasoning=reasoning,
             confidence=0.88,
+        )
+
+    if _is_market_overview_query(q):
+        return RouteDecision(
+            route="fast", intent="market_overview", entities=[],
+            reasoning="Live indices and sector snapshot — Fast Research.",
+            confidence=0.94,
         )
 
     if _is_educational_finance(q) or _is_social_query(q):
@@ -887,6 +941,13 @@ def classify_query(query: str, context_hint: str = "") -> RouteDecision:
 
     from debater_registry import match_debater, get_debater
 
+    if _is_market_overview_query(query):
+        return RouteDecision(
+            route="fast", intent="market_overview", entities=[],
+            reasoning="Live indices and sector snapshot — Fast Research.",
+            confidence=0.94,
+        )
+
     if _is_educational_finance(query):
         return RouteDecision(
             route="chat", intent="education", entities=[],
@@ -977,7 +1038,10 @@ def routing_steps(decision: RouteDecision) -> list[str]:
     elif decision.reasoning and "LLM gate" in decision.reasoning:
         steps.append("🧠 LLM finance gate: concept recognized")
     elif decision.route == "fast":
-        steps.append("⚡ Routing to: Fast Research (live data)")
+        if decision.intent == "market_overview":
+            steps.append("⚡ Routing to: Fast Research (market overview)")
+        else:
+            steps.append("⚡ Routing to: Fast Research (live data)")
     elif decision.route == "deep":
         label = "Deep Research (SEC + MCP)" if decision.deep_kind == "mcp" else "Deep Research (parallel)"
         steps.append(f"🔍 Routing to: {label}")

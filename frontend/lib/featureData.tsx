@@ -1,9 +1,89 @@
 import {
   TrendingUp, Brain, Shield, Zap, BarChart2, Clock,
-  Telescope, Users, MessageSquare, CloudCog,
+  Telescope, Users, MessageSquare, CloudCog, ClipboardCheck,
+  LineChart, Activity,
 } from 'lucide-react'
 
-export const NEW_FEATURES = [
+export type FeatureItem = {
+  icon: React.ReactNode
+  badge: string
+  title: string
+  desc: string
+  ai: string[]
+  stack: string[]
+  href: string
+  accent: string
+  theme: 'blue' | 'amber' | 'indigo' | 'emerald' | 'cyan' | 'green' | 'purple' | 'red' | 'orange' | 'yellow'
+  shipped?: string
+}
+
+/** Shipped June 17, 2026 — eval frameworks, observe expansions, market data & charts */
+export const TODAY_FEATURES: FeatureItem[] = [
+  {
+    icon:   <ClipboardCheck className="text-cyan-400" size={24} />,
+    badge:  'Jun 17',
+    title:  'RAGAS Eval (LLM Judge)',
+    desc:   'Official RAGAS library with Bedrock Nova judge — faithfulness, relevancy, context recall, hallucination gates on research RAG',
+    ai:     ['RAGAS metrics', 'LLM-as-judge', 'faithfulness gate', 'context audit'],
+    stack:  ['ragas 0.1.21', 'Bedrock Nova Lite', 'pgvector search', 'Aurora'],
+    href:   '/observe',
+    accent: 'border-cyan-500/30 bg-cyan-500/5',
+    theme:  'cyan',
+    shipped: '2026-06-17',
+  },
+  {
+    icon:   <Activity className="text-emerald-400" size={24} />,
+    badge:  'Jun 17',
+    title:  'Trading Outcome Eval',
+    desc:   'Scores paper trades vs 5-day forward price — attributes BUY/SELL/HOLD accuracy per agent with leaderboard and trade audits',
+    ai:     ['outcome scoring', 'agent attribution', 'P&L horizon', 'accuracy leaderboard'],
+    stack:  ['alex-trade-evaluator λ', 'yfinance', 'agent_performance', 'EventBridge'],
+    href:   '/observe',
+    accent: 'border-emerald-500/30 bg-emerald-500/5',
+    theme:  'emerald',
+    shipped: '2026-06-17',
+  },
+  {
+    icon:   <LineChart className="text-violet-400" size={24} />,
+    badge:  'Jun 17',
+    title:  'Holdings Breakdown Chart',
+    desc:   'Donut-style portfolio allocation on /charts — top tickers plus Others bucket with side table',
+    ai:     ['portfolio viz'],
+    stack:  ['Recharts', 'Aurora portfolios', 'Clerk auth'],
+    href:   '/charts',
+    accent: 'border-violet-500/30 bg-violet-500/5',
+    theme:  'purple',
+    shipped: '2026-06-17',
+  },
+  {
+    icon:   <TrendingUp className="text-yellow-400" size={24} />,
+    badge:  'Jun 17',
+    title:  'Live Market Overview',
+    desc:   '“How did markets do today?” returns real Dow, S&P, NASDAQ, and sector ETF moves — no placeholder X%',
+    ai:     ['market overview tool', 'fast route', 'indices + sectors'],
+    stack:  ['yfinance', 'query router', 'Nova Lite', 'ECS researcher'],
+    href:   '/research',
+    accent: 'border-yellow-500/30 bg-yellow-500/5',
+    theme:  'yellow',
+    shipped: '2026-06-17',
+  },
+  {
+    icon:   <Telescope className="text-indigo-400" size={24} />,
+    badge:  'Jun 17',
+    title:  'Observe — RAGAS & Outcome Tabs',
+    desc:   'Three-tab observability: research queries, trading floor ops, and RAGAS eval with run history and per-query audits',
+    ai:     ['eval scorecard', 'eval trend', 'trade audits', 'run eval buttons'],
+    stack:  ['Next.js API', 'Aurora ragas_eval_runs', 'trading_eval_runs', 'Lambda proxy'],
+    href:   '/observe',
+    accent: 'border-indigo-500/30 bg-indigo-500/5',
+    theme:  'indigo',
+    shipped: '2026-06-17',
+  },
+]
+
+export const SHIP_DATE_LABEL = 'June 17, 2026'
+
+export const NEW_FEATURES: FeatureItem[] = [
   {
     icon:   <MessageSquare className="text-blue-400" size={24} />,
     badge:  'New',
@@ -14,6 +94,17 @@ export const NEW_FEATURES = [
     href:   '/research',
     accent: 'border-blue-500/30 bg-blue-500/5',
     theme:  'blue' as const,
+  },
+  {
+    icon:   <ClipboardCheck className="text-cyan-400" size={24} />,
+    badge:  'Eval',
+    title:  'RAGAS Quality Gates',
+    desc:   'Measure RAG faithfulness and hallucination — block bad researcher deploys with audited benchmarks',
+    ai:     ['RAGAS eval', 'LLM judge', 'deploy gate'],
+    stack:  ['P17', '/observe', 'test_ragas.py'],
+    href:   '/observe',
+    accent: 'border-cyan-500/30 bg-cyan-500/5',
+    theme:  'cyan' as const,
   },
   {
     icon:   <Users className="text-amber-400" size={24} />,

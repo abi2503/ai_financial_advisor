@@ -3,8 +3,10 @@ Tools available to the Alex research agent.
 Hybrid approach: API for structured data, Playwright for context.
 """
 import os
+import json
 import httpx
 import logging
+from typing import Optional
 from agents import function_tool
 from datetime import datetime, UTC
 from query_trace import record_tool, record_api, get_trace
@@ -316,6 +318,141 @@ State clearly that live data is temporarily unavailable.
 """
 
 
+# Major indices + sector ETFs for broad market overview queries
+_MARKET_INDEX_SYMBOLS = [
+    ("^GSPC", "S&P 500"),
+    ("^DJI",  "Dow Jones Industrial Average"),
+    ("^IXIC", "NASDAQ Composite"),
+]
+_MARKET_SECTOR_SYMBOLS = [
+    ("XLK", "Technology"),
+    ("XLV", "Healthcare"),
+    ("XLE", "Energy"),
+    ("XLF", "Financials"),
+    ("XLY", "Consumer Discretionary"),
+]
+
+
+def _snapshot_symbol(symbol: str, label: str) -> dict:
+    """Single index/ETF quote with day change from yfinance."""
+    import yfinance as yf
+
+    try:
+        stock = yf.Ticker(symbol)
+        hist  = stock.history(period="5d")
+        if len(hist) >= 2:
+            prev = float(hist["Close"].iloc[-2])
+            curr = float(hist["Close"].iloc[-1])
+            chg  = curr - prev
+            chg_pct = (chg / prev) * 100 if prev else 0.0
+            return {
+                "symbol": symbol, "label": label,
+                "price": round(curr, 2),
+                "change": round(chg, 2),
+                "change_pct": round(chg_pct, 2),
+                "ok": True,
+            }
+        info  = stock.info
+        price = info.get("regularMarketPrice") or info.get("previousClose")
+        chg_pct = info.get("regularMarketChangePercent")
+        if price is not None:
+            return {
+                "symbol": symbol, "label": label,
+                "price": round(float(price), 2),
+                "change": None,
+                "change_pct": round(float(chg_pct), 2) if chg_pct is not None else None,
+                "ok": True,
+            }
+    except Exception as e:
+        logger.warning(f"Market snapshot failed for {symbol}: {e}")
+    return {"symbol": symbol, "label": label, "ok": False}
+
+
+def _fetch_fear_greed_score() -> Optional[float]:
+    try:
+        import urllib.request
+        url = "https://production.dataviz.cnn.io/index/fearandgreed/graphdata"
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=5) as r:
+            data = json.loads(r.read())
+        return float(data.get("fear_and_greed", {}).get("score", 0) or 0)
+    except Exception as e:
+        logger.warning(f"Fear & Greed fetch failed: {e}")
+        return None
+
+
+def _format_market_overview_text(
+    indices: list[dict], sectors: list[dict], fear_greed: Optional[float],
+) -> str:
+    today = datetime.now(UTC).strftime("%B %d, %Y")
+    lines = [
+        f"LIVE MARKET OVERVIEW — {today}",
+        "Source: Yahoo Finance (yfinance)",
+        "",
+        "MAJOR INDICES:",
+    ]
+    for row in indices:
+        if not row.get("ok"):
+            lines.append(f"- {row['label']}: unavailable")
+            continue
+        sign = "+" if (row.get("change_pct") or 0) >= 0 else ""
+        pct  = row.get("change_pct")
+        pct_s = f"{sign}{pct:.2f}%" if pct is not None else "N/A"
+        chg  = row.get("change")
+        chg_s = f" ({sign}{chg:.2f} pts)" if chg is not None else ""
+        lines.append(f"- {row['label']}: {row['price']}{chg_s} | {pct_s} today")
+
+    lines += ["", "SECTOR ETFs (market proxies):"]
+    for row in sectors:
+        if not row.get("ok"):
+            lines.append(f"- {row['label']}: unavailable")
+            continue
+        sign = "+" if (row.get("change_pct") or 0) >= 0 else ""
+        pct  = row.get("change_pct")
+        pct_s = f"{sign}{pct:.2f}%" if pct is not None else "N/A"
+        lines.append(f"- {row['label']} ({row['symbol']}): {row['price']} | {pct_s} today")
+
+    if fear_greed is not None:
+        mood = "Extreme Fear" if fear_greed < 25 else "Fear" if fear_greed < 45 else "Neutral" if fear_greed < 55 else "Greed" if fear_greed < 75 else "Extreme Greed"
+        lines += ["", f"CNN FEAR & GREED INDEX: {fear_greed:.0f}/100 ({mood})"]
+
+    return "\n".join(lines)
+
+
+def fetch_market_overview_sync() -> str:
+    """Sync fetch — indices, sectors, Fear & Greed."""
+    import time as time_mod
+
+    t0 = time_mod.monotonic()
+    indices = [_snapshot_symbol(sym, label) for sym, label in _MARKET_INDEX_SYMBOLS]
+    sectors = [_snapshot_symbol(sym, label) for sym, label in _MARKET_SECTOR_SYMBOLS]
+    fear_greed = _fetch_fear_greed_score()
+    text = _format_market_overview_text(indices, sectors, fear_greed)
+    ok = any(r.get("ok") for r in indices)
+    record_tool("get_market_overview", success=ok, latency_ms=int((time_mod.monotonic() - t0) * 1000),
+                apis=["Yahoo Finance API (yfinance)", "CNN Fear & Greed"])
+    record_api("Yahoo Finance API (yfinance)", success=ok)
+    return text
+
+
+async def build_market_overview_context() -> str:
+    """Async wrapper for market overview data."""
+    import asyncio
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, fetch_market_overview_sync)
+
+
+@function_tool
+async def get_market_overview() -> str:
+    """
+    Get today's performance for major US indices and key sector ETFs.
+    Use when the user asks how markets performed today, market overview,
+    Dow/S&P/NASDAQ update, or broad market summary — NOT for single stocks.
+
+    Returns:
+        Live index and sector snapshot with % changes
+    """
+    return await build_market_overview_context()
 
 
 @function_tool

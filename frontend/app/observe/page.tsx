@@ -109,6 +109,90 @@ interface RecentQuery {
   cost_usd: number
 }
 
+interface RagasRun {
+  run_id: string
+  gate: string
+  judge_model: string
+  backend: string
+  query_count: number
+  faithfulness: number
+  answer_relevancy: number
+  context_precision: number
+  context_recall: number
+  hallucination_rate: number
+  overall_score: number
+  passed: boolean
+  evaluated_at: string
+}
+
+interface RagasAudit {
+  id: string
+  query: string
+  response: string
+  ground_truth: string
+  faithfulness: number
+  answer_relevancy: number
+  context_precision: number
+  context_recall: number
+  hallucination_rate: number
+  overall_score: number
+  passed: boolean
+  gate: string
+  contexts: string[]
+  audit: Record<string, unknown>
+  evaluated_at: string
+}
+
+interface RagasThresholds {
+  faithfulness: number
+  answer_relevancy: number
+  hallucination_rate: number
+  context_recall: number
+}
+
+interface TradingEvalRun {
+  run_id: string
+  gate: string
+  horizon_days: number
+  trades_evaluated: number
+  trades_pending: number
+  trades_skipped: number
+  overall_accuracy: number
+  buy_accuracy: number
+  sell_accuracy: number
+  hold_neutral_rate: number
+  avg_pnl_pct: number
+  passed: boolean
+  evaluated_at: string
+}
+
+interface TradingLeaderboardRow {
+  agent_name: string
+  votes: number
+  correct_count: number
+  scored: number
+  accuracy: number
+}
+
+interface TradingAuditVote {
+  agent_name: string
+  action: string
+  confidence: number
+  correct: boolean | null
+  outcome?: string
+}
+
+interface TradingAudit {
+  trade_id: string
+  ticker: string
+  final_action: string
+  outcome: string
+  realized_pnl: number
+  return_pct: number
+  evaluated_at: string
+  agent_votes: TradingAuditVote[]
+}
+
 const AGENT_COLORS: Record<string, string> = {
   'marcus chen':       '#22c55e',
   'victoria sterling': '#ef4444',
@@ -156,6 +240,17 @@ function msLabel(ms: number) {
   return `${ms}ms`
 }
 
+function scorePct(v: number) {
+  return `${Math.round(v * 100)}%`
+}
+
+function metricColor(value: number, threshold: number, higherIsBetter = true) {
+  const ok = higherIsBetter ? value >= threshold : value <= threshold
+  if (ok) return 'text-green-400'
+  if (higherIsBetter ? value >= threshold * 0.9 : value <= threshold * 1.2) return 'text-yellow-400'
+  return 'text-red-400'
+}
+
 function StatusBadge({ ok, label }: { ok: boolean; label: string }) {
   return (
     <span className={`text-xs px-2 py-1 rounded border ${
@@ -180,7 +275,7 @@ function StageBar({ label, ms, total }: { label: string; ms: number; total: numb
 }
 
 export default function ObservePage() {
-  const [tab, setTab]               = useState<'research' | 'trading'>('research')
+  const [tab, setTab]               = useState<'research' | 'trading' | 'ragas'>('research')
   const [agents, setAgents]         = useState<AgentStat[]>([])
   const [platform, setPlatform]     = useState<Platform | null>(null)
   const [guardrails, setGuardrails] = useState<GuardrailLog[]>([])
@@ -189,6 +284,29 @@ export default function ObservePage() {
   const [researchTotals, setResearchTotals] = useState<ResearchTotals | null>(null)
   const [expanded, setExpanded]     = useState<string | null>(null)
   const [loading, setLoading]       = useState(true)
+
+  const [ragasLatest, setRagasLatest]       = useState<RagasRun | null>(null)
+  const [ragasTrend, setRagasTrend]         = useState<RagasRun[]>([])
+  const [ragasAudits, setRagasAudits]       = useState<RagasAudit[]>([])
+  const [ragasThresholds, setRagasThresholds] = useState<RagasThresholds>({
+    faithfulness: 0.88, answer_relevancy: 0.85, hallucination_rate: 0.08, context_recall: 0.70,
+  })
+  const [selectedRunId, setSelectedRunId]   = useState<string | null>(null)
+  const [ragasExpanded, setRagasExpanded]   = useState<string | null>(null)
+  const [ragasLoading, setRagasLoading]     = useState(false)
+  const [ragasRunning, setRagasRunning]     = useState(false)
+  const [ragasError, setRagasError]         = useState<string | null>(null)
+
+  const [tradingEvalLatest, setTradingEvalLatest] = useState<TradingEvalRun | null>(null)
+  const [tradingEvalTrend, setTradingEvalTrend]   = useState<TradingEvalRun[]>([])
+  const [tradingLeaderboard, setTradingLeaderboard] = useState<TradingLeaderboardRow[]>([])
+  const [tradingAudits, setTradingAudits]         = useState<TradingAudit[]>([])
+  const [tradingEvalPending, setTradingEvalPending] = useState(0)
+  const [tradingEvalLoading, setTradingEvalLoading] = useState(false)
+  const [tradingEvalRunning, setTradingEvalRunning] = useState(false)
+  const [tradingEvalError, setTradingEvalError]   = useState<string | null>(null)
+  const [tradingEvalExpanded, setTradingEvalExpanded] = useState<string | null>(null)
+  const [selectedTradingRunId, setSelectedTradingRunId] = useState<string | null>(null)
 
   const fetchData = useCallback(async () => {
     try {
@@ -207,6 +325,95 @@ export default function ObservePage() {
     }
   }, [])
 
+  const fetchRagas = useCallback(async (runId?: string | null) => {
+    setRagasLoading(true)
+    setRagasError(null)
+    try {
+      const qs = runId ? `?run_id=${encodeURIComponent(runId)}` : ''
+      const res  = await fetch(`/api/observe/ragas${qs}`)
+      const data = await res.json()
+      setRagasLatest(data.latest || null)
+      setRagasTrend(data.trend || [])
+      setRagasAudits(data.audits || [])
+      setRagasThresholds(data.thresholds || {
+        faithfulness: 0.88, answer_relevancy: 0.85, hallucination_rate: 0.08, context_recall: 0.70,
+      })
+      setSelectedRunId(data.selected_run_id || null)
+    } catch (err) {
+      console.error(err)
+      setRagasError('Failed to load RAGAS eval data')
+    } finally {
+      setRagasLoading(false)
+    }
+  }, [])
+
+  const runRagasEval = useCallback(async (smoke = false) => {
+    setRagasRunning(true)
+    setRagasError(null)
+    try {
+      const res = await fetch('/api/observe/ragas/run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ smoke }),
+      })
+      const data = await res.json()
+      if (!res.ok) {
+        setRagasError(data.error || 'RAGAS eval failed')
+        return
+      }
+      await fetchRagas(data.run_id)
+    } catch (err) {
+      console.error(err)
+      setRagasError('RAGAS eval request failed')
+    } finally {
+      setRagasRunning(false)
+    }
+  }, [fetchRagas])
+
+  const fetchTradingEval = useCallback(async (runId?: string | null) => {
+    setTradingEvalLoading(true)
+    setTradingEvalError(null)
+    try {
+      const qs = runId ? `?run_id=${encodeURIComponent(runId)}` : ''
+      const res = await fetch(`/api/observe/trading-eval${qs}`)
+      const data = await res.json()
+      setTradingEvalLatest(data.latest || null)
+      setTradingEvalTrend(data.trend || [])
+      setTradingLeaderboard(data.leaderboard || [])
+      setTradingAudits(data.audits || [])
+      setTradingEvalPending(data.pending_mature_trades || 0)
+      setSelectedTradingRunId(data.selected_run_id || null)
+    } catch (err) {
+      console.error(err)
+      setTradingEvalError('Failed to load outcome eval data')
+    } finally {
+      setTradingEvalLoading(false)
+    }
+  }, [])
+
+  const runTradingEval = useCallback(async () => {
+    setTradingEvalRunning(true)
+    setTradingEvalError(null)
+    try {
+      const res = await fetch('/api/observe/trading-eval/run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ horizon_days: 5 }),
+      })
+      const data = await res.json()
+      if (!res.ok) {
+        setTradingEvalError(data.error || 'Outcome eval failed')
+        return
+      }
+      await fetchTradingEval(data.run_id)
+    } catch (err) {
+      console.error(err)
+      setTradingEvalError('Outcome eval request failed')
+    } finally {
+      setTradingEvalRunning(false)
+    }
+  }, [fetchTradingEval])
+
   useEffect(() => { fetchData() }, [fetchData])
 
   useEffect(() => {
@@ -215,9 +422,17 @@ export default function ObservePage() {
     return () => clearInterval(id)
   }, [tab, fetchData])
 
+  useEffect(() => {
+    if (tab === 'ragas') fetchRagas(selectedRunId)
+  }, [tab, fetchRagas, selectedRunId])
+
+  useEffect(() => {
+    if (tab === 'trading') fetchTradingEval(selectedTradingRunId)
+  }, [tab, fetchTradingEval, selectedTradingRunId])
+
   const maxCost = Math.max(...agents.map(a => a.total_cost), 0.0001)
 
-  if (loading) {
+  if (loading && tab !== 'ragas') {
     return (
       <div className="min-h-screen bg-gray-950 flex items-center justify-center">
         <div className="text-center">
@@ -239,20 +454,28 @@ export default function ObservePage() {
               Per-query latency, LLM tokens, AWS Bedrock cost, tools & APIs — last 7 days
             </p>
           </div>
-          <button onClick={() => { setLoading(true); fetchData() }}
+          <button onClick={() => {
+            if (tab === 'ragas') { setRagasLoading(true); fetchRagas(selectedRunId) }
+            else if (tab === 'trading') { setTradingEvalLoading(true); fetchTradingEval(selectedTradingRunId) }
+            else { setLoading(true); fetchData() }
+          }}
             className="px-3 py-1.5 text-sm text-gray-400 hover:text-white border border-gray-700 rounded-lg">
             ↻ Refresh
           </button>
         </div>
         <div className="max-w-7xl mx-auto px-4 flex gap-1 pb-0">
-          {(['research', 'trading'] as const).map(t => (
-            <button key={t} onClick={() => setTab(t)}
+          {([
+            { id: 'research' as const, label: '🧠 Research Queries' },
+            { id: 'trading' as const,  label: '📈 Trading Floor' },
+            { id: 'ragas' as const,    label: '📋 RAGAS Eval' },
+          ]).map(t => (
+            <button key={t.id} onClick={() => setTab(t.id)}
               className={`px-4 py-2 text-sm font-medium rounded-t-lg border-b-2 transition ${
-                tab === t
+                tab === t.id
                   ? 'border-indigo-500 text-white bg-gray-900'
                   : 'border-transparent text-gray-500 hover:text-gray-300'
               }`}>
-              {t === 'research' ? '🧠 Research Queries' : '📈 Trading Floor'}
+              {t.label}
             </button>
           ))}
         </div>
@@ -525,6 +748,126 @@ export default function ObservePage() {
               ))}
             </div>
 
+            {/* Outcome-based eval */}
+            <div className="mb-8 bg-gray-900 border border-gray-800 rounded-xl p-5">
+              <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+                <div>
+                  <h3 className="text-sm font-semibold text-gray-400 uppercase tracking-wider">
+                    Outcome Eval — Paper Trade Accuracy
+                  </h3>
+                  <p className="text-xs text-gray-600 mt-1">
+                    Scores BUY/SELL/HOLD/TRIM vs {tradingEvalLatest?.horizon_days ?? 5}d forward price — per agent attribution
+                  </p>
+                </div>
+                <button
+                  onClick={runTradingEval}
+                  disabled={tradingEvalRunning}
+                  className="px-3 py-1.5 text-sm bg-emerald-700 hover:bg-emerald-600 rounded-lg text-white disabled:opacity-50">
+                  {tradingEvalRunning ? 'Scoring…' : `Run eval${tradingEvalPending > 0 ? ` (${tradingEvalPending} ready)` : ''}`}
+                </button>
+              </div>
+
+              {tradingEvalError && (
+                <div className="mb-3 p-2 bg-red-950 border border-red-800 rounded text-xs text-red-300">
+                  {tradingEvalError}
+                </div>
+              )}
+
+              {tradingEvalLoading ? (
+                <p className="text-sm text-gray-500">Loading outcome eval…</p>
+              ) : !tradingEvalLatest ? (
+                <p className="text-sm text-gray-500">
+                  No outcome evals yet. Run debates on <Link href="/trading" className="text-blue-400">/trading</Link>, wait 5+ days, then run eval.
+                </p>
+              ) : (
+                <>
+                  <div className="grid grid-cols-2 md:grid-cols-6 gap-2 mb-4">
+                    <div className="bg-gray-800/50 rounded-lg p-3">
+                      <p className="text-xs text-gray-500">Gate</p>
+                      <p className={`font-bold ${tradingEvalLatest.passed ? 'text-green-400' : 'text-red-400'}`}>
+                        {tradingEvalLatest.passed ? 'PASS' : 'FAIL'}
+                      </p>
+                    </div>
+                    {[
+                      ['Agent accuracy', tradingEvalLatest.overall_accuracy, 0.5],
+                      ['BUY accuracy', tradingEvalLatest.buy_accuracy, 0.5],
+                      ['SELL accuracy', tradingEvalLatest.sell_accuracy, 0.5],
+                      ['Avg return', tradingEvalLatest.avg_pnl_pct / 100, 0],
+                      ['Trades scored', tradingEvalLatest.trades_evaluated, 1],
+                    ].map(([label, v, thresh]) => (
+                      <div key={String(label)} className="bg-gray-800/50 rounded-lg p-3">
+                        <p className="text-xs text-gray-500">{label}</p>
+                        <p className={`font-bold ${
+                          label === 'Trades scored' ? 'text-white' :
+                          metricColor(v as number, thresh as number)
+                        }`}>
+                          {label === 'Trades scored' ? String(v) : label === 'Avg return' ? `${(v as number).toFixed(2)}%` : scorePct(v as number)}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+
+                  {tradingLeaderboard.length > 0 && (
+                    <div className="mb-4">
+                      <p className="text-xs font-semibold text-gray-500 uppercase mb-2">Agent leaderboard (last run)</p>
+                      <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
+                        {tradingLeaderboard.map(row => {
+                          const color = AGENT_COLORS[row.agent_name] || '#6b7280'
+                          const label = AGENT_LABELS[row.agent_name] || row.agent_name
+                          return (
+                            <div key={row.agent_name} className="bg-gray-800/40 rounded-lg p-2 text-xs">
+                              <div className="flex items-center gap-1.5 mb-1">
+                                <div className="w-2 h-2 rounded-full" style={{ backgroundColor: color }} />
+                                <span className="text-white font-medium">{label}</span>
+                              </div>
+                              <p className={metricColor(row.accuracy, 0.5)}>{scorePct(row.accuracy)}</p>
+                              <p className="text-gray-600">{row.correct_count}/{row.scored} correct</p>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    </div>
+                  )}
+
+                  {tradingAudits.length > 0 && (
+                    <div className="space-y-2">
+                      <p className="text-xs font-semibold text-gray-500 uppercase">Trade audits</p>
+                      {tradingAudits.slice(0, 8).map(a => (
+                        <div key={a.trade_id} className="border border-gray-800 rounded-lg overflow-hidden">
+                          <button
+                            onClick={() => setTradingEvalExpanded(tradingEvalExpanded === a.trade_id ? null : a.trade_id)}
+                            className="w-full text-left px-3 py-2 flex justify-between items-center hover:bg-gray-800/50 text-sm">
+                            <span>
+                              <span className="text-white font-medium">{a.ticker}</span>
+                              <span className="text-gray-500 ml-2">{a.final_action}</span>
+                              <span className={`ml-2 text-xs ${a.outcome === 'correct' || a.outcome === 'partial' ? 'text-green-400' : a.outcome === 'neutral' ? 'text-gray-400' : 'text-red-400'}`}>
+                                {a.outcome} · {a.return_pct >= 0 ? '+' : ''}{a.return_pct.toFixed(2)}%
+                              </span>
+                            </span>
+                            <span className="text-gray-600 text-xs">{tradingEvalExpanded === a.trade_id ? '▲' : '▼'}</span>
+                          </button>
+                          {tradingEvalExpanded === a.trade_id && (
+                            <div className="px-3 pb-3 border-t border-gray-800 pt-2 space-y-1">
+                              {a.agent_votes.map(v => (
+                                <div key={v.agent_name} className="flex justify-between text-xs">
+                                  <span className="text-gray-400">{AGENT_LABELS[v.agent_name] || v.agent_name}: {v.action}</span>
+                                  {v.correct === null ? (
+                                    <span className="text-gray-500">neutral</span>
+                                  ) : (
+                                    <StatusBadge ok={v.correct} label={v.correct ? 'correct' : 'wrong'} />
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
               <div>
                 <h3 className="text-sm font-semibold text-gray-400 mb-3 uppercase tracking-wider">Agent Cost Breakdown</h3>
@@ -583,6 +926,205 @@ export default function ObservePage() {
                 )}
               </div>
             </div>
+          </>
+        )}
+
+        {/* ── RAGAS EVAL TAB ── */}
+        {tab === 'ragas' && (
+          <>
+            <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
+              <div>
+                <h3 className="text-sm font-semibold text-gray-400 uppercase tracking-wider">
+                  RAGAS Evaluation — LLM-as-Judge (Bedrock)
+                </h3>
+                <p className="text-xs text-gray-600 mt-1">
+                  Faithfulness, answer relevancy, context recall/precision — audited per query
+                </p>
+              </div>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => runRagasEval(true)}
+                  disabled={ragasRunning}
+                  className="px-3 py-1.5 text-sm border border-gray-700 rounded-lg text-gray-300 hover:text-white disabled:opacity-50">
+                  {ragasRunning ? 'Running…' : 'Smoke (3q)'}
+                </button>
+                <button
+                  onClick={() => runRagasEval(false)}
+                  disabled={ragasRunning}
+                  className="px-3 py-1.5 text-sm bg-indigo-600 hover:bg-indigo-500 rounded-lg text-white disabled:opacity-50">
+                  {ragasRunning ? 'Running eval…' : 'Run full eval'}
+                </button>
+              </div>
+            </div>
+
+            {ragasError && (
+              <div className="mb-4 p-3 bg-red-950 border border-red-800 rounded-lg text-sm text-red-300">
+                {ragasError}
+              </div>
+            )}
+
+            {ragasLoading ? (
+              <div className="bg-gray-900 border border-gray-800 rounded-xl p-12 text-center">
+                <div className="w-10 h-10 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin mx-auto mb-3" />
+                <p className="text-gray-400 text-sm">Loading RAGAS eval history…</p>
+              </div>
+            ) : !ragasLatest ? (
+              <div className="bg-gray-900 border border-gray-800 rounded-xl p-12 text-center">
+                <p className="text-4xl mb-3">📋</p>
+                <p className="text-gray-400 text-sm">No RAGAS evaluations yet.</p>
+                <p className="text-gray-600 text-xs mt-2">Run a smoke or full eval to populate scorecard and audits.</p>
+              </div>
+            ) : (
+              <>
+                {/* Gate + scorecard */}
+                <div className="grid grid-cols-2 md:grid-cols-6 gap-3 mb-6">
+                  <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 md:col-span-1">
+                    <p className="text-xs text-gray-500 uppercase">Gate</p>
+                    <p className={`text-lg font-bold mt-1 ${ragasLatest.passed ? 'text-green-400' : 'text-red-400'}`}>
+                      {ragasLatest.passed ? 'PASS' : 'FAIL'}
+                    </p>
+                    <p className="text-xs text-gray-600 mt-1">{ragasLatest.gate}</p>
+                  </div>
+                  {[
+                    { key: 'faithfulness', label: 'Faithfulness', thresh: ragasThresholds.faithfulness, higher: true },
+                    { key: 'answer_relevancy', label: 'Relevancy', thresh: ragasThresholds.answer_relevancy, higher: true },
+                    { key: 'context_recall', label: 'Ctx recall', thresh: ragasThresholds.context_recall, higher: true },
+                    { key: 'hallucination_rate', label: 'Hallucination', thresh: ragasThresholds.hallucination_rate, higher: false },
+                    { key: 'overall_score', label: 'Overall', thresh: 0.85, higher: true },
+                  ].map(m => {
+                    const v = ragasLatest[m.key as keyof RagasRun] as number
+                    return (
+                      <div key={m.key} className="bg-gray-900 border border-gray-800 rounded-xl p-4">
+                        <p className="text-xs text-gray-500 uppercase">{m.label}</p>
+                        <p className={`text-2xl font-bold mt-1 ${metricColor(v, m.thresh, m.higher)}`}>
+                          {scorePct(v)}
+                        </p>
+                        <p className="text-xs text-gray-600 mt-1">
+                          target {m.higher ? '≥' : '≤'} {scorePct(m.thresh)}
+                        </p>
+                      </div>
+                    )
+                  })}
+                </div>
+
+                <p className="text-xs text-gray-600 mb-4">
+                  Latest run {new Date(ragasLatest.evaluated_at).toLocaleString()} ·
+                  judge {ragasLatest.judge_model?.replace('us.', '') || 'nova-lite'} ·
+                  {ragasLatest.query_count} queries · backend {ragasLatest.backend}
+                </p>
+
+                {/* Trend */}
+                {ragasTrend.length > 1 && (
+                  <div className="mb-8">
+                    <h3 className="text-sm font-semibold text-gray-400 mb-3 uppercase tracking-wider">Score trend</h3>
+                    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 overflow-x-auto">
+                      <div className="flex gap-3 min-w-max">
+                        {ragasTrend.map(r => (
+                          <button
+                            key={r.run_id}
+                            onClick={() => setSelectedRunId(r.run_id)}
+                            className={`text-left p-3 rounded-lg border min-w-[120px] transition ${
+                              selectedRunId === r.run_id
+                                ? 'border-indigo-500 bg-indigo-950/30'
+                                : 'border-gray-800 hover:border-gray-700'
+                            }`}>
+                            <p className="text-xs text-gray-500">{new Date(r.evaluated_at).toLocaleDateString()}</p>
+                            <p className={`text-sm font-bold ${r.passed ? 'text-green-400' : 'text-red-400'}`}>
+                              {scorePct(r.overall_score)}
+                            </p>
+                            <p className="text-xs text-gray-600">{r.gate}</p>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Per-query audits */}
+                <h3 className="text-sm font-semibold text-gray-400 mb-3 uppercase tracking-wider">
+                  Per-query audits
+                </h3>
+                <div className="space-y-3">
+                  {ragasAudits.map(a => (
+                    <div key={a.id} className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+                      <button
+                        onClick={() => setRagasExpanded(ragasExpanded === a.id ? null : a.id)}
+                        className="w-full text-left p-4 flex items-start justify-between gap-4 hover:bg-gray-800/50">
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2 mb-1">
+                            <span className={`text-xs px-2 py-0.5 rounded border ${
+                              a.passed
+                                ? 'bg-green-950 border-green-800 text-green-400'
+                                : 'bg-red-950 border-red-800 text-red-400'
+                            }`}>
+                              {a.passed ? 'PASS' : 'FAIL'}
+                            </span>
+                            <span className="text-xs text-gray-600">{scorePct(a.overall_score)} overall</span>
+                          </div>
+                          <p className="text-sm text-white truncate">{a.query}</p>
+                        </div>
+                        <span className="text-gray-500 text-xs shrink-0">{ragasExpanded === a.id ? '▲' : '▼'}</span>
+                      </button>
+
+                      {ragasExpanded === a.id && (
+                        <div className="px-4 pb-4 border-t border-gray-800 pt-4 space-y-4">
+                          <div className="grid grid-cols-2 md:grid-cols-5 gap-2 text-xs">
+                            {[
+                              ['Faithfulness', a.faithfulness, ragasThresholds.faithfulness, true],
+                              ['Relevancy', a.answer_relevancy, ragasThresholds.answer_relevancy, true],
+                              ['Ctx precision', a.context_precision, 0.7, true],
+                              ['Ctx recall', a.context_recall, ragasThresholds.context_recall, true],
+                              ['Hallucination', a.hallucination_rate, ragasThresholds.hallucination_rate, false],
+                            ].map(([label, v, t, higher]) => (
+                              <div key={String(label)} className="bg-gray-800/50 rounded-lg p-2">
+                                <p className="text-gray-500">{label}</p>
+                                <p className={`font-bold ${metricColor(v as number, t as number, higher as boolean)}`}>
+                                  {scorePct(v as number)}
+                                </p>
+                              </div>
+                            ))}
+                          </div>
+
+                          <div>
+                            <p className="text-xs font-semibold text-gray-500 uppercase mb-1">Generated answer</p>
+                            <p className="text-sm text-gray-300 whitespace-pre-wrap">{a.response}</p>
+                          </div>
+
+                          <div>
+                            <p className="text-xs font-semibold text-gray-500 uppercase mb-1">Ground truth</p>
+                            <p className="text-sm text-gray-400">{a.ground_truth}</p>
+                          </div>
+
+                          <div>
+                            <p className="text-xs font-semibold text-gray-500 uppercase mb-1">
+                              Retrieved contexts ({a.contexts.length})
+                            </p>
+                            {a.contexts.length === 0 ? (
+                              <p className="text-xs text-red-400">No context retrieved — search may have failed</p>
+                            ) : (
+                              <div className="space-y-2">
+                                {a.contexts.map((c, i) => (
+                                  <p key={i} className="text-xs text-gray-500 bg-gray-800/40 rounded p-2 line-clamp-3">
+                                    {c}
+                                  </p>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+
+                          <div>
+                            <p className="text-xs font-semibold text-gray-500 uppercase mb-1">Judge audit</p>
+                            <pre className="text-xs text-gray-500 bg-gray-800/40 rounded p-2 overflow-x-auto">
+                              {JSON.stringify(a.audit, null, 2)}
+                            </pre>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
           </>
         )}
       </div>

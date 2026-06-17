@@ -1,0 +1,5 @@
+# RAGAS evaluation dependencies (local eval + ECS /eval/ragas/run)
+ragas==0.1.21
+langchain-aws>=0.2.0
+langchain-community>=0.3.0
+datasets>=2.14.0

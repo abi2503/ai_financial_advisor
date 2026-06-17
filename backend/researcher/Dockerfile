@@ -44,10 +44,12 @@ RUN uv pip install --system \
     yfinance \
     edgartools
 
+COPY requirements-eval.txt ./
+RUN uv pip install --system -r requirements-eval.txt
 
-    
 # Copy application code
 COPY *.py ./
+COPY eval/ ./eval/
 
 EXPOSE 8000
 

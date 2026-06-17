@@ -157,7 +157,10 @@ export async function POST(req: NextRequest) {
           })))
           await pipeEcsStream(
             ECS_URL, '/research/stream',
-            { topic: query, user_id: userId, session_id: sessionId },
+            {
+              topic: query, user_id: userId, session_id: sessionId,
+              intent: routing.intent,
+            },
             controller, encoder,
           )
         }

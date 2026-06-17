@@ -142,3 +142,60 @@ resource "aws_lambda_event_source_mapping" "trading_queue_trigger" {
 output "debate_agent_function" {
   value = aws_lambda_function.debate_agent.function_name
 }
+
+resource "aws_lambda_function" "trade_evaluator" {
+  s3_bucket     = "twin-terraform-state-381491881089"
+  s3_key        = "lambdas/trading_package.zip"
+  function_name = "alex-trade-evaluator"
+  role          = local.agent_role
+  handler       = "learning.trade_evaluator.lambda_handler"
+  runtime       = "python3.12"
+  timeout       = 300
+  memory_size   = 512
+  environment {
+    variables = {
+      DB_CLUSTER_ARN  = local.cluster_arn
+      DB_SECRET_ARN   = local.secret_arn
+      DB_NAME         = "alex_db"
+      AWS_REGION_NAME = local.region
+    }
+  }
+  tags = { Project = local.project }
+}
+
+resource "aws_cloudwatch_log_group" "trade_evaluator_logs" {
+  name              = "/aws/lambda/alex-trade-evaluator"
+  retention_in_days = 7
+  tags              = { Project = local.project }
+}
+
+resource "aws_scheduler_schedule" "trade_evaluator_daily" {
+  name       = "alex-trade-evaluator-daily"
+  group_name = "default"
+
+  flexible_time_window {
+    mode = "OFF"
+  }
+
+  schedule_expression          = "cron(0 22 ? * MON-FRI *)"
+  schedule_expression_timezone = "America/New_York"
+
+  target {
+    arn      = aws_lambda_function.trade_evaluator.arn
+    role_arn = local.eb_role
+
+    input = jsonencode({ gate = "scheduled", horizon_days = 5 })
+  }
+}
+
+resource "aws_lambda_permission" "trade_evaluator_scheduler" {
+  statement_id  = "AllowEventBridgeTradeEval"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.trade_evaluator.function_name
+  principal     = "scheduler.amazonaws.com"
+  source_arn    = aws_scheduler_schedule.trade_evaluator_daily.arn
+}
+
+output "trade_evaluator_function" {
+  value = aws_lambda_function.trade_evaluator.function_name
+}

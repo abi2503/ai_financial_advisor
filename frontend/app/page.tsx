@@ -1,7 +1,7 @@
 import Link from 'next/link'
 import { auth } from '@clerk/nextjs/server'
 import { Brain, Zap, ChevronDown } from 'lucide-react'
-import { NEW_FEATURES, CORE_FEATURES } from '@/lib/featureData'
+import { NEW_FEATURES, CORE_FEATURES, TODAY_FEATURES, SHIP_DATE_LABEL } from '@/lib/featureData'
 import { FeatureTags } from '@/components/TagPills'
 
 export default async function LandingPage() {
@@ -75,6 +75,34 @@ export default async function LandingPage() {
 
       {/* Feature catalog */}
       <section id="catalog" className="max-w-6xl mx-auto px-6 py-16 scroll-mt-8">
+        <div className="text-center mb-10">
+          <p className="text-purple-400 text-sm font-medium mb-2">Shipped {SHIP_DATE_LABEL}</p>
+          <h2 className="text-2xl font-bold text-white mb-2">Latest features</h2>
+          <Link href={userId ? '/features' : '/sign-up'} className="text-sm text-blue-400 hover:underline">
+            Full feature catalog →
+          </Link>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-10">
+          {TODAY_FEATURES.slice(0, 4).map((f) => (
+            <Link
+              key={f.title}
+              href={userId ? f.href : '/sign-up'}
+              className={`group p-6 border rounded-xl transition hover:scale-[1.01] ${f.accent} hover:border-opacity-60`}
+            >
+              <div className="flex items-start justify-between mb-4">
+                <div className="p-2 bg-gray-900/80 rounded-lg">{f.icon}</div>
+                <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/30">
+                  {f.badge}
+                </span>
+              </div>
+              <h3 className="text-white font-semibold text-lg mb-2 group-hover:text-blue-300 transition">
+                {f.title}
+              </h3>
+              <p className="text-gray-400 text-sm leading-relaxed">{f.desc}</p>
+              <FeatureTags ai={f.ai} stack={f.stack} section="new" />
+            </Link>
+          ))}
+        </div>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           {NEW_FEATURES.map((f) => (
             <Link

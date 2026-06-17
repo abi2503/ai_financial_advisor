@@ -11,7 +11,7 @@ from datetime import datetime, UTC
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
@@ -28,10 +28,13 @@ from prompts import (
     DEFAULT_RESEARCH_PROMPT, build_deep_scope_directive,
 )
 from mcp_servers import create_playwright_mcp_server
-from tools import ingest_financial_document, get_stock_data, get_sec_filings
+from tools import ingest_financial_document, get_stock_data, get_sec_filings, build_market_overview_context
 from query_trace import QueryTrace, activate_trace, deactivate_trace, record_mcp
 from latency_tracker import LatencyTracker, activate_tracker, deactivate_tracker, get_tracker
-from query_router import classify_query, routing_steps, RouteDecision, infer_research_scope, deep_reasoning_steps
+from query_router import (
+    classify_query, routing_steps, RouteDecision, infer_research_scope, deep_reasoning_steps,
+    _is_market_overview_query, _is_leadership_query,
+)
 
 GUARDRAIL_ID      = os.getenv("BEDROCK_GUARDRAIL_ID",      "eea439luokx8")
 GUARDRAIL_VERSION = os.getenv("BEDROCK_GUARDRAIL_VERSION", "1")
@@ -130,6 +133,11 @@ class ResearchRequest(BaseModel):
     intent:     Optional[str] = None
     debater:    Optional[str] = None
     ticker:     Optional[str] = None
+
+
+class RagasEvalRequest(BaseModel):
+    gate:  Optional[str] = "observe"
+    smoke: bool          = False
 
 
 # ============================================
@@ -465,6 +473,30 @@ Instructions:
     return prompt, max_tokens
 
 
+def _build_market_overview_prompt(query: str, overview_data: str) -> tuple[str, int]:
+    """Prompt Nova with live index data — no placeholders."""
+    today = datetime.now(UTC).strftime("%B %d, %Y")
+    prompt = f"""You are Alex, a financial research assistant. Today is {today}.
+
+LIVE DATA (use ONLY these numbers — do not invent prices or % changes):
+{overview_data}
+
+User: {query}
+
+Write a concise **Market Overview Today** in markdown:
+1. Greet the user by name if they introduced themselves.
+2. Table: Index | Level | Change today (%)
+3. Table: Sector | ETF | Change today (%)
+4. 2–3 bullet points interpreting sector leaders/laggards and Fear & Greed if present.
+5. One sentence closing offer to drill into a sector or ticker.
+
+Rules:
+- Use EXACT numbers from LIVE DATA above.
+- NEVER use placeholders like X%, [Briefly mention], or bracketed filler.
+- If a data point is unavailable, say "unavailable" — do not guess."""
+    return prompt, 550
+
+
 _STREAM_DONE = object()
 
 
@@ -669,9 +701,37 @@ async def health():
             "alex_api_configured": bool(os.getenv("ALEX_API_ENDPOINT") and os.getenv("ALEX_API_KEY")),
             "aws_region":    REGION,
             "bedrock_model": MODEL,
+            "ragas_eval":    True,
         },
         "timestamp": datetime.now(UTC).isoformat()
     }
+
+
+@app.post("/eval/ragas/run")
+async def eval_ragas_run(request: RagasEvalRequest):
+    """Run RAGAS evaluation with Bedrock LLM judge; persists to Aurora."""
+    gate  = request.gate or "observe"
+    smoke = request.smoke
+
+    def _run():
+        from eval.ragas_runner import run_evaluation
+        return run_evaluation(gate=gate, smoke=smoke, persist=True)
+
+    try:
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(None, _run)
+        payload = result.to_dict()
+        if not payload.get("passed"):
+            return JSONResponse(status_code=422, content={"status": "failed", **payload})
+        return {"status": "ok", **payload}
+    except ImportError as e:
+        raise HTTPException(
+            status_code=503,
+            detail=f"RAGAS eval dependencies not installed: {e}",
+        )
+    except Exception as e:
+        logger.error(f"RAGAS eval error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/research/route")
@@ -917,6 +977,7 @@ async def research_stream(request: ResearchRequest):
     topic      = request.topic      or "trending financial topics today"
     user_id    = request.user_id    or ""
     session_id = request.session_id or ""
+    intent     = request.intent or ""
 
     emit_metric('ResearchQuery', 1, dimensions={'Mode': 'stream'})
 
@@ -928,15 +989,46 @@ async def research_stream(request: ResearchRequest):
     tok_tr  = activate_tracker(tracker)
     tok_qt  = activate_trace(qtrace)
 
+    market_overview = intent == "market_overview" or _is_market_overview_query(topic)
+
     async def generate():
         try:
+            if market_overview:
+                yield f"data: {json.dumps({'type': 'reasoning', 'content': '📊 Fetching live market indices...'})}\n\n"
+                yield f"data: {json.dumps({'type': 'reasoning', 'content': '📈 Loading sector ETF performance...'})}\n\n"
+
+                ctx_t0 = time.time()
+                overview_data = await build_market_overview_context()
+                tracker.mark_context_ms(int((time.time() - ctx_t0) * 1000))
+
+                prompt, max_tokens = _build_market_overview_prompt(topic, overview_data)
+                yield "data: " + json.dumps({
+                    "type": "reasoning",
+                    "content": "🧠 Summarizing today's market moves...",
+                }) + "\n\n"
+                yield f"data: {json.dumps({'type': 'reasoning_done'})}\n\n"
+
+                reply_parts = []
+                async for token in stream_bedrock_conversation(prompt, max_tokens, tracker=tracker):
+                    if not reply_parts:
+                        tracker.mark_first_token_ms(int((time.monotonic() - tracker.t0) * 1000))
+                    reply_parts.append(token)
+                    yield f"data: {json.dumps({'type': 'token', 'content': token})}\n\n"
+
+                full_response = "".join(reply_parts)
+                save_session(user_id, session_id, topic, full_response)
+                tracker.set_response(full_response)
+                tracker.success = True
+                yield f"data: {json.dumps({'type': 'done', 'route': 'fast', 'intent': 'market_overview', 'latency': round(time.monotonic() - tracker.t0, 1)})}\n\n"
+                return
+
             yield f"data: {json.dumps({'type': 'reasoning', 'content': '📊 Fetching live market data...'})}\n\n"
             yield f"data: {json.dumps({'type': 'reasoning', 'content': '📰 Scanning latest news headlines...'})}\n\n"
 
             ctx_t0       = time.time()
             context      = get_context(topic, user_id, session_id, fast=True)
             tracker.mark_context_ms(int((time.time() - ctx_t0) * 1000))
-            from query_router import enrich_follow_up_query, _is_leadership_query
+            from query_router import enrich_follow_up_query
             enriched, _  = enrich_follow_up_query(topic, context)
             work_topic   = enriched
             instructions = get_fast_agent_instructions()

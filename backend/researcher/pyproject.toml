@@ -14,3 +14,11 @@ dependencies = [
     "yfinance>=0.2.40",
     "edgartools>=2.0.0",
 ]
+
+[project.optional-dependencies]
+eval = [
+    "ragas==0.1.21",
+    "langchain-aws>=0.2.0",
+    "langchain-community>=0.3.0",
+    "datasets>=2.14.0",
+]

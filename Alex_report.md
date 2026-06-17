@@ -1,7 +1,7 @@
 # Alex AI — Complete Platform Report (Full Edition)
 
 **Document:** `Alex_report.md`  
-**Date:** June 16, 2026 (authoritative snapshot)  
+**Date:** June 17, 2026 (authoritative snapshot)  
 **Author:** Platform engineering summary (codebase-derived)  
 **Status:** Code complete for P0 + P1; AWS infra session-dependent (see §34.12)  
 **Companion docs:** `P0_report.md`, `Alex_AI_2.0.md`, `Alex_chat_intelligence.md`, `Alex_Trading_Floor_2.0.md`, `Alex_Master_Implementation_Plan.md`, `Alex_Fixes.md`, `Agentic_Usecase.md`, `usecases.md`, `RIA.md`, `DM_apply.md`, `Startup.md`, `Ophelia.md`
@@ -45,6 +45,7 @@
 33. [Change Log & Documentation Policy](#33-change-log--documentation-policy)
 34. [Current Application State — Authoritative Snapshot (June 16, 2026)](#34-current-application-state--authoritative-snapshot-june-16-2026)
 35. [Latest Functionalities Shipped — June 2026 Batch](#35-latest-functionalities-shipped--june-2026-batch)
+36. [Latest Functionalities Shipped — June 17, 2026 (Eval & Observe)](#36-latest-functionalities-shipped--june-17-2026-eval--observe)
 
 ---
 
@@ -2938,6 +2939,79 @@ Per user-approved step-by-step sequence:
 
 ---
 
+## 36. Latest Functionalities Shipped — June 17, 2026 (Eval & Observe)
+
+> **Scope:** P17 RAGAS eval framework, P8 outcome-based trading eval (MVP), market overview fix, charts holdings breakdown, `/features` catalog page. UI catalog: `/features` · Observe: `/observe` (RAGAS + Trading tabs).
+
+### 36.1 RAGAS evaluation (P17)
+
+| Feature | What it does | Where |
+|---------|--------------|-------|
+| **RAGAS library + Bedrock judge** | Official `ragas==0.1.21` with Nova Lite judge + Titan embeddings | `backend/researcher/eval/ragas_runner.py` |
+| **Benchmark queries** | 5 NVIDIA regression queries + 3-query smoke set | `eval/benchmark_queries.py` |
+| **Aurora persist** | `ragas_eval_runs` + extended `ragas_evaluations` (audits, contexts, ground truth) | `eval/db.py`, `aurora_warmup.py` |
+| **ECS endpoint** | `POST /eval/ragas/run` on researcher service | `server.py` |
+| **CLI** | `python3 scripts/tests/test_ragas.py [--smoke]` | `scripts/tests/test_ragas.py` |
+| **Observe RAGAS tab** | Scorecard, trend, per-query audits, Run full / Smoke buttons | `/observe` → RAGAS Eval |
+| **API routes** | `GET /api/observe/ragas`, `POST /api/observe/ragas/run` | `frontend/app/api/observe/ragas/` |
+
+**Gate thresholds:** faithfulness ≥ 0.88 · answer relevancy ≥ 0.85 · hallucination ≤ 0.08
+
+### 36.2 Trading outcome evaluation (P8 MVP)
+
+| Feature | What it does | Where |
+|---------|--------------|-------|
+| **Outcome scorer** | Scores BUY/SELL/HOLD/TRIM vs 5-day forward price | `learning/scoring.py` |
+| **Trade evaluator** | Fetches mature `simulated_trades`, attributes per-agent votes | `learning/trade_evaluator.py` |
+| **Aurora tables** | `trading_eval_runs` + `agent_performance` audit columns | `aurora_warmup.py` |
+| **Lambda** | `alex-trade-evaluator` — manual + daily Mon–Fri 5 PM ET | `terraform/9_trading_floor` |
+| **Observe panel** | Agent accuracy leaderboard, trade audits, Run eval | `/observe` → Trading Floor |
+| **API routes** | `GET /api/observe/trading-eval`, `POST …/run` | Lambda invoke from Next.js |
+| **CLI** | `python3 scripts/tests/test_trading_eval.py` | `scripts/tests/` |
+
+**Scoring rules:** BUY correct if price up · SELL if down · HOLD neutral if \|return\| < 2% · TRIM partial credit
+
+### 36.3 Research & UX
+
+| Feature | What it does | Technical |
+|---------|--------------|-----------|
+| **Live market overview** | “How did markets perform today?” → real indices + sector ETFs | `get_market_overview()` in `tools.py`, fast route in `query_router.py` |
+| **Holdings breakdown chart** | Donut allocation + side table (top 13 + Others) | `frontend/app/charts/page.tsx` |
+| **Feature catalog page** | `/features` — today's ship list + platform + core infra | `frontend/app/features/page.tsx`, `lib/featureData.tsx` |
+| **Navbar link** | Features entry in main nav | `Navbar.tsx` |
+
+### 36.4 Infrastructure & deployment (June 17)
+
+| Item | Detail |
+|------|--------|
+| Researcher Docker | `requirements-eval.txt` (ragas, langchain-aws, datasets) + `COPY eval/` |
+| Trading deploy | `deploy_trading.sh` deploys orchestrator, debate agent, **trade evaluator** |
+| Terraform | `alex-trade-evaluator` + EventBridge schedule from S3 package |
+| Aurora warmup | `ragas_eval_runs`, `trading_eval_runs`, indexes, agent_performance migrations |
+| Docs | `RL_Update.md` §13 fine-tuning + debate data plane |
+
+### 36.5 Verification
+
+| Test / script | Covers |
+|---------------|--------|
+| `test_trading_scoring.py` | Outcome scoring rules (BUY/SELL/HOLD/TRIM) |
+| `test_trading_eval.py` | Full outcome eval pipeline |
+| `test_ragas.py` | RAGAS smoke / full eval CLI |
+| Lambda smoke | `alex-trade-evaluator` invoke → 200 + run_id |
+| `/features` | Feature catalog UI renders TODAY_FEATURES |
+
+### 36.6 Feature catalog quick reference
+
+| UI route | Feature |
+|----------|---------|
+| `/features` | Full catalog — shipped today + platform + core |
+| `/observe` (RAGAS tab) | RAG quality scorecard + audits |
+| `/observe` (Trading tab) | Outcome eval + agent leaderboard |
+| `/charts` | Holdings breakdown donut |
+| `/research` | Live market overview queries |
+
+---
+
 ## Why Alex Wins — Final USP Summary
 
 1. **One interface, many intelligences** — Chat, Fast, Deep, Debater, Parallel — user never configures
@@ -2953,9 +3027,10 @@ Per user-approved step-by-step sequence:
 11. **Clear regulatory posture** — Research + simulation, not brokerage or robo-advisor
 12. **Sustainable unit economics** — ~79% gross margin at $29/mo with tiered models
 13. **Documented engineering** — 62 router + 51 foundation tests, `Alex_Fixes.md` audit, full observability, IaC
-14. **FinOps per query** — Token and cost attribution on every chat and research call
-15. **Session memory that works** — Follow-ups, vague continuations, and insider topic routing stay on ticker
+16. **Measured AI quality** — RAGAS gates on research RAG; outcome eval on trading agents
+17. **FinOps per query** — Token and cost attribution on every chat and research call
+18. **Session memory that works** — Follow-ups, vague continuations, and insider topic routing stay on ticker
 
 ---
 
-*This report reflects the Alex codebase and documentation as of **June 16, 2026**. Authoritative current-state inventory: [§34](#34-current-application-state--authoritative-snapshot-june-16-2026). Latest shipped features: [§35](#35-latest-functionalities-shipped--june-2026-batch). Living roadmap: `Alex_Master_Implementation_Plan.md`, `Alex_AI_2.0.md`, `Alex_Trading_Floor_2.0.md`, `Alex_chat_intelligence.md`, `Alex_Fixes.md`. **All changes must be logged in §33.***
+*This report reflects the Alex codebase and documentation as of **June 17, 2026**. Authoritative current-state inventory: [§34](#34-current-application-state--authoritative-snapshot-june-16-2026). Latest shipped features: [§35](#35-latest-functionalities-shipped--june-2026-batch), [§36](#36-latest-functionalities-shipped--june-17-2026-eval--observe). Living roadmap: `Alex_Master_Implementation_Plan.md`, `Alex_AI_2.0.md`, `Alex_Trading_Floor_2.0.md`, `Alex_chat_intelligence.md`, `Alex_Fixes.md`, `RL_Update.md`. **All changes must be logged in §33.***

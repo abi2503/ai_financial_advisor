@@ -61,5 +61,24 @@ aws lambda update-function-configuration \
 aws lambda wait function-updated --function-name alex-debate-agent --region $REGION
 echo "  OK debate agent deployed"
 
+# Deploy trade evaluator (outcome-based eval)
+if aws lambda get-function --function-name alex-trade-evaluator --region $REGION > /dev/null 2>&1; then
+  echo "Deploying alex-trade-evaluator..."
+  aws lambda update-function-code \
+    --function-name alex-trade-evaluator \
+    --s3-bucket $BUCKET \
+    --s3-key lambdas/trading_package.zip \
+    --region $REGION > /dev/null
+  aws lambda wait function-updated --function-name alex-trade-evaluator --region $REGION
+  aws lambda update-function-configuration \
+    --function-name alex-trade-evaluator \
+    --handler learning.trade_evaluator.lambda_handler \
+    --region $REGION > /dev/null
+  aws lambda wait function-updated --function-name alex-trade-evaluator --region $REGION
+  echo "  OK trade evaluator deployed"
+else
+  echo "  ⏭ alex-trade-evaluator not found — run terraform apply in terraform/9_trading_floor first"
+fi
+
 echo ""
 echo "Trading Floor deployed!"

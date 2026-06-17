@@ -40,6 +40,28 @@ def test_fast_route():
             fail(q, f"expected {expected}, got {d.route}")
 
 
+def test_market_overview_route():
+    print("\n── P1 market overview ──")
+    cases = [
+        "my name is Abhishek and I want an overview of the markets have performed today",
+        "How did the stock market perform today?",
+        "Give me a market overview for today — Dow, S&P, NASDAQ",
+        "How are markets doing today?",
+    ]
+    for q in cases:
+        d = classify_query(q)
+        if d.route == "fast" and d.intent == "market_overview":
+            ok(f'"{q[:50]}..." → fast market_overview')
+        else:
+            fail(q, f"route={d.route} intent={d.intent}")
+
+    edu = classify_query("what is the stock market")
+    if edu.route == "chat":
+        ok('"what is the stock market" stays chat (education)')
+    else:
+        fail("what is the stock market", f"route={edu.route} intent={edu.intent}")
+
+
 def test_deep_mcp():
     print("\n── P1 deep MCP ──")
     cases = [
@@ -361,6 +383,7 @@ def main():
     print("🧪 P1 Query Router Tests")
     print("=" * 50)
     test_fast_route()
+    test_market_overview_route()
     test_deep_mcp()
     test_deep_parallel()
     test_chat_route()
