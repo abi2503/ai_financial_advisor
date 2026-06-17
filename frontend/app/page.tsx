@@ -1,8 +1,8 @@
 import Link from 'next/link'
 import { auth } from '@clerk/nextjs/server'
 import { Brain, Zap, ChevronDown } from 'lucide-react'
-import { NEW_FEATURES, CORE_FEATURES, TODAY_FEATURES, SHIP_DATE_LABEL } from '@/lib/featureData'
-import { FeatureTags } from '@/components/TagPills'
+import { NEW_FEATURES, CORE_FEATURES, SHIP_DATE_LABEL, SHIPPED_TODAY_CATALOG } from '@/lib/featureData'
+import { CatalogSection } from '@/components/CatalogGrid'
 
 export default async function LandingPage() {
   const { userId } = await auth()
@@ -73,36 +73,8 @@ export default async function LandingPage() {
         </a>
       </section>
 
-      {/* Feature catalog */}
-      <section id="catalog" className="max-w-6xl mx-auto px-6 py-16 scroll-mt-8">
-        <div className="text-center mb-10">
-          <p className="text-purple-400 text-sm font-medium mb-2">Shipped {SHIP_DATE_LABEL}</p>
-          <h2 className="text-2xl font-bold text-white mb-2">Latest features</h2>
-          <Link href={userId ? '/features' : '/sign-up'} className="text-sm text-blue-400 hover:underline">
-            Full feature catalog →
-          </Link>
-        </div>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-10">
-          {TODAY_FEATURES.slice(0, 4).map((f) => (
-            <Link
-              key={f.title}
-              href={userId ? f.href : '/sign-up'}
-              className={`group p-6 border rounded-xl transition hover:scale-[1.01] ${f.accent} hover:border-opacity-60`}
-            >
-              <div className="flex items-start justify-between mb-4">
-                <div className="p-2 bg-gray-900/80 rounded-lg">{f.icon}</div>
-                <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/30">
-                  {f.badge}
-                </span>
-              </div>
-              <h3 className="text-white font-semibold text-lg mb-2 group-hover:text-blue-300 transition">
-                {f.title}
-              </h3>
-              <p className="text-gray-400 text-sm leading-relaxed">{f.desc}</p>
-              <FeatureTags ai={f.ai} stack={f.stack} section="new" />
-            </Link>
-          ))}
-        </div>
+      {/* Feature catalog — shipped today (highlight cards) */}
+      <section id="catalog" className="max-w-6xl mx-auto px-6 pt-16 pb-8 scroll-mt-8">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           {NEW_FEATURES.map((f) => (
             <Link
@@ -120,34 +92,31 @@ export default async function LandingPage() {
                 {f.title}
               </h3>
               <p className="text-gray-400 text-sm leading-relaxed">{f.desc}</p>
-              <FeatureTags ai={f.ai} stack={f.stack} section="new" />
-              <p className="text-xs text-gray-600 mt-4 group-hover:text-blue-400 transition">
-                {userId ? 'Open' : 'Sign in to access'}
-              </p>
             </Link>
           ))}
         </div>
+        <p className="text-center mt-8">
+          <Link href={userId ? '/features' : '/sign-up'} className="text-sm text-blue-400 hover:underline">
+            Full feature catalog →
+          </Link>
+        </p>
       </section>
 
-      {/* Core platform catalog */}
-      <section id="features" className="max-w-5xl mx-auto px-6 py-20 border-t border-gray-800/60">
-        <h2 className="text-2xl font-bold text-white text-center mb-3">
-          Core platform
-        </h2>
-        <p className="text-gray-500 text-center mb-12 text-sm">
-          The infrastructure behind every Alex response
-        </p>
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
-          {CORE_FEATURES.map((f) => (
-            <div key={f.title} className="p-6 bg-gray-900 border border-gray-800 rounded-xl hover:border-gray-600 transition">
-              <div className="mb-3">{f.icon}</div>
-              <h3 className="text-white font-semibold mb-2">{f.title}</h3>
-              <p className="text-gray-400 text-sm leading-relaxed">{f.desc}</p>
-              <FeatureTags ai={f.ai} stack={f.stack} section="core" />
-            </div>
-          ))}
-        </div>
-      </section>
+      {/* Shipped today + core platform — screenshot catalog layout */}
+      <CatalogSection
+        title={`Shipped — ${SHIP_DATE_LABEL}`}
+        subtitle="Eval frameworks, observability, market data, and charts added today"
+        items={SHIPPED_TODAY_CATALOG}
+        bordered
+      />
+
+      <CatalogSection
+        id="features"
+        title="Core platform"
+        subtitle="The infrastructure behind every Alex response"
+        items={CORE_FEATURES}
+        bordered
+      />
 
       {/* CTA: only show to logged out users */}
       {!userId && (

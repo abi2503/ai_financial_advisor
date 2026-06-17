@@ -83,6 +83,11 @@ export const TODAY_FEATURES: FeatureItem[] = [
 
 export const SHIP_DATE_LABEL = 'June 17, 2026'
 
+/** Same card shape as Core platform catalog (screenshot layout) */
+export const SHIPPED_TODAY_CATALOG = TODAY_FEATURES.map(({ icon, title, desc, ai, stack, href }) => ({
+  icon, title, desc, ai, stack, href,
+}))
+
 export const NEW_FEATURES: FeatureItem[] = [
   {
     icon:   <MessageSquare className="text-blue-400" size={24} />,
@@ -140,6 +145,10 @@ export const NEW_FEATURES: FeatureItem[] = [
     theme:  'emerald' as const,
   },
 ]
+
+export const PLATFORM_CATALOG = NEW_FEATURES.map(({ icon, title, desc, ai, stack, href }) => ({
+  icon, title, desc, ai, stack, href,
+}))
 
 export const CORE_FEATURES = [
   {
