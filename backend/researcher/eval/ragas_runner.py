@@ -37,6 +37,12 @@ load_dotenv(override=True)
 REGION         = os.environ.get("AWS_REGION", os.environ.get("AWS_REGION_NAME", "us-east-1"))
 SEARCH_API     = os.environ.get("ALEX_SEARCH_API", os.environ.get("SEARCH_API", ""))
 SEARCH_API_KEY = os.environ.get("ALEX_SEARCH_API_KEY", os.environ.get("ALEX_API_KEY", ""))
+if not SEARCH_API:
+    _ingest = os.environ.get("ALEX_API_ENDPOINT", "")
+    if _ingest.endswith("/ingest"):
+        SEARCH_API = _ingest.replace("/ingest", "/search")
+if not SEARCH_API_KEY:
+    SEARCH_API_KEY = os.environ.get("ALEX_API_KEY", "")
 JUDGE_MODEL    = os.environ.get("RAGAS_JUDGE_MODEL", "us.amazon.nova-lite-v1:0")
 GEN_MODEL      = os.environ.get("RAGAS_GEN_MODEL", "us.amazon.nova-pro-v1:0")
 EMBED_MODEL    = os.environ.get("RAGAS_EMBED_MODEL", "amazon.titan-embed-text-v2:0")
@@ -218,7 +224,7 @@ def run_evaluation(
     gate: str = "manual",
     smoke: bool = False,
     persist: bool = True,
-    report_path: str | None = "scripts/tests/ragas_report.json",
+    report_path: str | None = None,
 ) -> EvalRunResult:
     """
     Run full RAGAS eval with Bedrock judge.
@@ -317,18 +323,21 @@ def run_evaluation(
     if report_path:
         root = Path(__file__).resolve().parents[3]
         out = root / report_path
-        out.parent.mkdir(parents=True, exist_ok=True)
-        payload = {
-            "date": evaluated_at,
-            "run_id": run_id,
-            "gate": gate,
-            "judge_model": JUDGE_MODEL,
-            "method": "ragas_library_bedrock_judge",
-            "summary": summary,
-            "thresholds": THRESHOLDS,
-            "queries": rows,
-        }
-        out.write_text(json.dumps(payload, indent=2))
-        print(f"  Report: {out}")
+        try:
+            out.parent.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "date": evaluated_at,
+                "run_id": run_id,
+                "gate": gate,
+                "judge_model": JUDGE_MODEL,
+                "method": "ragas_library_bedrock_judge",
+                "summary": summary,
+                "thresholds": THRESHOLDS,
+                "queries": rows,
+            }
+            out.write_text(json.dumps(payload, indent=2))
+            print(f"  Report: {out}")
+        except OSError as e:
+            logger.warning(f"Could not write RAGAS report: {e}")
 
     return result

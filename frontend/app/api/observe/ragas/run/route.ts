@@ -35,6 +35,11 @@ export async function POST(req: NextRequest) {
     clearTimeout(timeout)
     const data = await ecsResponse.json().catch(() => ({}))
 
+    // 422 = eval completed but quality gate failed — still return scores
+    if (ecsResponse.status === 422) {
+      return NextResponse.json({ status: 'failed', ...data })
+    }
+
     if (!ecsResponse.ok) {
       return NextResponse.json(
         { error: data.detail || data.error || `RAGAS eval failed (${ecsResponse.status})`, ...data },

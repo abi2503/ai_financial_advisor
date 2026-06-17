@@ -357,7 +357,7 @@ export default function ObservePage() {
         body: JSON.stringify({ smoke }),
       })
       const data = await res.json()
-      if (!res.ok) {
+      if (!res.ok && res.status !== 422) {
         setRagasError(data.error || 'RAGAS eval failed')
         return
       }

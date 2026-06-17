@@ -45,7 +45,9 @@ RUN uv pip install --system \
     edgartools
 
 COPY requirements-eval.txt ./
-RUN uv pip install --system -r requirements-eval.txt
+# RAGAS pulls openai<2 via langchain-openai; restore openai 2.x for openai-agents
+RUN uv pip install --system -r requirements-eval.txt \
+    && uv pip install --system "openai>=2.42" openai-agents
 
 # Copy application code
 COPY *.py ./

@@ -1,5 +1,6 @@
-# RAGAS evaluation dependencies (local eval + ECS /eval/ragas/run)
+# RAGAS evaluation dependencies — pinned to match working .venv-ragas combo
 ragas==0.1.21
-langchain-aws>=0.2.0
-langchain-community>=0.3.0
-datasets>=2.14.0
+langchain-aws==0.1.18
+langchain-community==0.2.19
+langchain-core==0.2.43
+datasets==5.0.0
