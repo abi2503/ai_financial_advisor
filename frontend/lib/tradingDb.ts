@@ -5,7 +5,7 @@ const CLUSTER_ARN = process.env.DB_CLUSTER_ARN!
 const SECRET_ARN = process.env.DB_SECRET_ARN!
 const DB_NAME = 'alex_db'
 
-export async function executeWithRetry(sql: string, parameters: { name: string; value: Record<string, unknown> }[] = []) {
+export async function executeWithRetry(sql: string, parameters: any[] = []) {
   for (let i = 0; i < 5; i++) {
     try {
       return await rds.send(new ExecuteStatementCommand({
@@ -27,7 +27,7 @@ export async function executeWithRetry(sql: string, parameters: { name: string; 
   throw new Error('Aurora failed after 5 retries')
 }
 
-export function parseVal(field: Record<string, unknown> | undefined): unknown {
+export function parseVal(field: any): unknown {
   if (!field) return null
   return Object.values(field)[0] ?? null
 }
@@ -70,7 +70,7 @@ export async function resetTradingDebateContext(clerkId: string, mode = 'neutral
      WHERE u.clerk_id = :uid AND p.shares > 0 AND p.ticker IS NOT NULL`,
     [uidParam],
   )
-  let initialValue = parseFloat(String(parseVal(valueResult.records?.[0]?.[0] as Record<string, unknown>) || 0))
+  let initialValue = parseFloat(String(parseVal(valueResult.records?.[0]?.[0]) || 0))
   if (initialValue <= 0) initialValue = 10000
 
   const cashBalance = initialValue * 0.05
@@ -90,7 +90,7 @@ export async function resetTradingDebateContext(clerkId: string, mode = 'neutral
     ],
   )
 
-  const simulationId = parseVal(simResult.records?.[0]?.[0] as Record<string, unknown>) as string | null
+  const simulationId = parseVal(simResult.records?.[0]?.[0]) as string | null
   if (!simulationId) {
     return {
       cleared_tables: [...CONTEXT_TABLES],
@@ -127,7 +127,7 @@ export async function resetTradingDebateContext(clerkId: string, mode = 'neutral
      WHERE u.clerk_id = :uid AND ap.simulation_id = :sim::uuid`,
     [uidParam, { name: 'sim', value: { stringValue: simulationId } }],
   )
-  const positionsSeeded = parseInt(String(parseVal(countResult.records?.[0]?.[0] as Record<string, unknown>) || 0), 10)
+  const positionsSeeded = parseInt(String(parseVal(countResult.records?.[0]?.[0]) || 0), 10)
 
   return {
     cleared_tables: [...CONTEXT_TABLES],
