@@ -18,23 +18,30 @@ export async function POST(req: NextRequest) {
   const { userId } = await auth()
   if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
-  const { enabled, reset_context: resetContext } = await req.json()
+  const body = await req.json().catch(() => ({}))
+  const enabled = Boolean(body.enabled)
+  const resetContext = Boolean(body.reset_context)
 
-  let resetResult = null
-  if (enabled && resetContext) {
-    resetResult = await resetTradingDebateContext(userId)
+  try {
+    let resetResult = null
+    if (enabled && resetContext) {
+      resetResult = await resetTradingDebateContext(userId)
+    }
+
+    await ssm.send(new PutParameterCommand({
+      Name:      '/alex/trading/enabled',
+      Value:     enabled ? 'true' : 'false',
+      Type:      'String',
+      Overwrite: true,
+    }))
+
+    return NextResponse.json({
+      enabled,
+      reset_context: resetContext && enabled,
+      reset: resetResult,
+    })
+  } catch (error) {
+    console.error('Trading toggle error:', error)
+    return NextResponse.json({ error: 'Failed to update trading toggle' }, { status: 500 })
   }
-
-  await ssm.send(new PutParameterCommand({
-    Name:      '/alex/trading/enabled',
-    Value:     enabled ? 'true' : 'false',
-    Type:      'String',
-    Overwrite: true
-  }))
-
-  return NextResponse.json({
-    enabled,
-    reset_context: Boolean(resetContext && enabled),
-    reset: resetResult,
-  })
 }

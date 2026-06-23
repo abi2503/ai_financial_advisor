@@ -12,12 +12,22 @@ rm -rf $TEMP && mkdir -p $TEMP
 # Copy trading package
 cp -r backend/agents/trading/* $TEMP/
 
-# Install Linux-compatible binaries for Lambda
-pip install yfinance boto3 \
+# Install Linux-compatible binaries for Lambda (Python 3.12 on x86_64)
+pip install yfinance boto3 pydantic \
   --target $TEMP/ \
   --platform manylinux2014_x86_64 \
+  --python-version 3.12 \
+  --implementation cp \
   --only-binary=:all: \
-  --quiet 2>/dev/null
+  --quiet 2>/dev/null || {
+  echo "Binary install failed — retrying without only-binary for pydantic..."
+  pip install yfinance boto3 pydantic \
+    --target $TEMP/ \
+    --platform manylinux2014_x86_64 \
+    --python-version 3.12 \
+    --implementation cp \
+    --quiet
+}
 
 find $TEMP -name "*.pyc" -delete 2>/dev/null || true
 find $TEMP -name "*.zip" -delete 2>/dev/null || true

@@ -317,13 +317,24 @@ export default function TradingPage() {
 
   const runAnalysis = async () => {
     setRunning(true)
+    setLastRun(null)
     try {
       const res  = await fetch('/api/trading/run', { method: 'POST' })
       const data = await res.json()
-      setLastRun(data.message)
-      setTimeout(fetchData, 30000)
+      if (!res.ok) {
+        setLastRun(`Failed: ${data.error || 'Could not start analysis'}`)
+        return
+      }
+      const queued = data.queued?.length || 0
+      setLastRun(data.message || `Analyzing ${queued} position(s)...`)
+      // Poll for debate results — each ticker takes ~1–2 min via SQS
+      const polls = [15000, 45000, 90000, 150000]
+      for (const delay of polls) {
+        setTimeout(fetchData, delay)
+      }
     } catch (err) {
       console.error(err)
+      setLastRun('Failed to start analysis — check console')
     } finally {
       setRunning(false)
     }
@@ -335,11 +346,15 @@ export default function TradingPage() {
     setEnabled(newState)
     try {
       const res = await fetch('/api/trading/toggle', {
-        method: 'POST',
+        method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ enabled: newState, reset_context: shouldReset }),
+        body:    JSON.stringify({ enabled: newState, reset_context: shouldReset }),
       })
-      const data = await res.json()
+      const text = await res.text()
+      const data = text ? JSON.parse(text) : {}
+      if (!res.ok) {
+        throw new Error(data.error || `Toggle failed (${res.status})`)
+      }
       if (data.reset?.simulation_id) {
         setContextMessage(data.reset.positions_seeded
           ? `Fresh debate context — ${data.reset.positions_seeded} position(s) seeded from portfolio.`
@@ -349,6 +364,7 @@ export default function TradingPage() {
     } catch (err) {
       console.error(err)
       setEnabled(!newState)
+      setContextMessage('Failed to update trading toggle — try again.')
     }
   }
 

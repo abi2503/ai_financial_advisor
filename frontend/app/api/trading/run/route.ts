@@ -18,8 +18,16 @@ export async function POST(req: NextRequest) {
       })
     }))
 
-    const response = JSON.parse(new TextDecoder().decode(result.Payload))
-    const body     = JSON.parse(response.body)
+    const raw = JSON.parse(new TextDecoder().decode(result.Payload || new Uint8Array()))
+    if (raw.errorMessage || raw.errorType) {
+      console.error('Orchestrator Lambda error:', raw.errorMessage)
+      return NextResponse.json(
+        { error: raw.errorMessage || 'Trading orchestrator failed' },
+        { status: 500 },
+      )
+    }
+
+    const body = typeof raw.body === 'string' ? JSON.parse(raw.body) : raw.body || raw
 
     return NextResponse.json({
       success: true,
