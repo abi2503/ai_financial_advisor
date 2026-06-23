@@ -1,10 +1,19 @@
 #!/bin/bash
 set -e
 
-source ../../.env
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+if [ -f "$ROOT/.env" ]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "$ROOT/.env"
+  set +a
+fi
 
-REGION=${DEFAULT_AWS_REGION:-us-east-1}
-ACCOUNT_ID=${AWS_ACCOUNT_ID}
+REGION=${DEFAULT_AWS_REGION:-${AWS_REGION:-us-east-1}}
+ACCOUNT_ID=${AWS_ACCOUNT_ID:-}
+if [ -z "$ACCOUNT_ID" ]; then
+  ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+fi
 ECR_URL="${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com/alex-researcher"
 
 echo "🔐 Logging into ECR..."
@@ -97,22 +106,18 @@ aws ssm put-parameter \
   --region $REGION > /dev/null
 echo "✅ SSM updated: http://${ALB_URL}"
 
-# Update frontend .env.local
-if [ -f "../../frontend/.env.local" ]; then
-  sed -i '' \
-    "s|NEXT_PUBLIC_ECS_URL=.*|NEXT_PUBLIC_ECS_URL=http://${ALB_URL}|" \
-    ../../frontend/.env.local
-  sed -i '' \
-    "s|ECS_URL=.*|ECS_URL=http://${ALB_URL}|" \
-    ../../frontend/.env.local
+# Update frontend .env.local (local dev only — skipped in CI)
+if [ -f "$ROOT/frontend/.env.local" ]; then
+  sed -i.bak "s|NEXT_PUBLIC_ECS_URL=.*|NEXT_PUBLIC_ECS_URL=http://${ALB_URL}|" "$ROOT/frontend/.env.local"
+  sed -i.bak "s|ECS_URL=.*|ECS_URL=http://${ALB_URL}|" "$ROOT/frontend/.env.local"
+  rm -f "$ROOT/frontend/.env.local.bak"
   echo "✅ Updated frontend/.env.local"
 fi
 
-# Update root .env
-if [ -f "../../.env" ]; then
-  sed -i '' \
-    "s|ECS_SERVICE_URL=.*|ECS_SERVICE_URL=http://${ALB_URL}|" \
-    ../../.env
+# Update root .env (local dev only)
+if [ -f "$ROOT/.env" ]; then
+  sed -i.bak "s|ECS_SERVICE_URL=.*|ECS_SERVICE_URL=http://${ALB_URL}|" "$ROOT/.env"
+  rm -f "$ROOT/.env.bak"
   echo "✅ Updated .env"
 fi
 

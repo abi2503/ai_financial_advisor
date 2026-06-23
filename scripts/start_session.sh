@@ -169,6 +169,28 @@ wait_for_health() {
   return 0
 }
 
+ecs_service_active() {
+  local status
+  status=$(aws ecs describe-services \
+    --cluster alex-cluster --services alex-researcher \
+    --region "$REGION" \
+    --query "services[0].status" \
+    --output text 2>/dev/null || echo "MISSING")
+  [ "$status" = "ACTIVE" ]
+}
+
+resume_ecs() {
+  ensure_ecr_image || return 1
+  echo "  ▶️  Scaling ECS to 1 (middle lean resume)..."
+  aws ecs update-service \
+    --cluster alex-cluster \
+    --service alex-researcher \
+    --desired-count 1 \
+    --force-new-deployment \
+    --region "$REGION" > /dev/null
+  wait_for_ecs || true
+}
+
 echo "🔐 Step 0: IAM + SageMaker role (Terraform)..."
 cd terraform/2_sagemaker
 terraform apply -auto-approve -compact-warnings \
@@ -230,21 +252,35 @@ if [ "$ECS_RUNNING" = "None" ] || [ "$ECS_RUNNING" = "null" ] || [ -z "$ECS_RUNN
   ECS_RUNNING=0
 fi
 
-if [ "$ECS_RUNNING" -ge 1 ] && [ -n "$ALB_DNS" ] && [ "$ALB_DNS" != "None" ]; then
-  echo "  ✅ ECS running ($ECS_RUNNING tasks)"
-else
-  echo "  ⚠️  Recreating ECS via Terraform..."
+if ecs_service_active && [ -n "$ALB_DNS" ] && [ "$ALB_DNS" != "None" ]; then
+  if [ "$ECS_RUNNING" -ge 1 ]; then
+    echo "  ✅ ECS already running ($ECS_RUNNING tasks)"
+  else
+    resume_ecs || true
+  fi
+elif [ -n "$ALB_DNS" ] && [ "$ALB_DNS" != "None" ]; then
+  echo "  ⚠️  ECS service missing — creating via Terraform..."
   cd terraform/4_researcher
   if ! terraform apply -auto-approve -compact-warnings; then
     echo "  ❌ ECS terraform apply failed"
     exit 1
   fi
   cd "$ROOT"
-  ensure_ecr_image || true
-  aws ecs update-service --cluster alex-cluster --service alex-researcher \
-    --desired-count 1 --force-new-deployment --region "$REGION" > /dev/null 2>&1 || true
-  wait_for_ecs || true
-
+  resume_ecs || true
+  ALB_URL=$(get_alb_url)
+  ECR_URL=$(cd terraform/4_researcher && terraform output -raw ecr_repository_url 2>/dev/null || echo "")
+  echo ""
+  echo "  📝 Updating env files with ECS endpoints..."
+  update_env_from_ecs "$ALB_URL" "$ECR_URL"
+else
+  echo "  ⚠️  No ALB found — full ECS Terraform apply..."
+  cd terraform/4_researcher
+  if ! terraform apply -auto-approve -compact-warnings; then
+    echo "  ❌ ECS terraform apply failed"
+    exit 1
+  fi
+  cd "$ROOT"
+  resume_ecs || true
   ALB_URL=$(get_alb_url)
   ECR_URL=$(cd terraform/4_researcher && terraform output -raw ecr_repository_url 2>/dev/null || echo "")
   echo ""
@@ -252,13 +288,10 @@ else
   update_env_from_ecs "$ALB_URL" "$ECR_URL"
 fi
 
-# Ensure image exists even when ECS was already running (e.g. after stop_session destroy)
-if [ "$ECS_RUNNING" -ge 1 ] && [ -n "$ALB_DNS" ] && [ "$ALB_DNS" != "None" ]; then
+# Ensure ECR image exists when service is active but image was deleted
+if ecs_service_active; then
   if ! aws ecr describe-images --repository-name alex-researcher --image-ids imageTag=latest --region "$REGION" > /dev/null 2>&1; then
-    ensure_ecr_image || true
-    aws ecs update-service --cluster alex-cluster --service alex-researcher \
-      --force-new-deployment --region "$REGION" > /dev/null 2>&1 || true
-    wait_for_ecs || true
+    resume_ecs || true
   fi
 fi
 
@@ -321,5 +354,5 @@ else
 fi
 echo "  ALB: ${ALB_URL:-not available}"
 echo "  SageMaker: $SM_FINAL"
-echo "  Stop: bash scripts/stop_session.sh"
+echo "  Stop: bash scripts/stop_session.sh  (middle lean — scales ECS to 0)"
 echo "===================================="

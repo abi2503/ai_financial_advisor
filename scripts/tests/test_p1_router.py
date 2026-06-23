@@ -252,6 +252,17 @@ def test_follow_up_context():
     else:
         fail("enrich_follow_up_query", f"topic={enriched} scope={getattr(scope, 'scope', scope)}")
 
+    nvda_ctx = (
+        "USER: insider trade details for NVDA\n"
+        "ALEX: Insider Trading Details for NVDA. Accession Number: 0001197649-26-000008\n"
+        "USER: can i know more details?"
+    )
+    d4 = classify_query("can i know more details?", nvda_ctx)
+    if d4.route == "deep" and d4.entities and d4.entities[0] == "NVDA" and d4.research_scope == "filing_form4":
+        ok('"can i know more details?" after NVDA Form 4 → deep MCP filing_form4')
+    else:
+        fail("NVDA insider vague follow-up", f"route={d4.route} entities={d4.entities} scope={d4.research_scope}")
+
 
 def test_micron_sec_entities():
     print("\n── P1 company name → ticker ──")

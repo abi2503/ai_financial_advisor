@@ -553,6 +553,66 @@ Router chose Fast Research correctly, but response was a full price/news table �
 
 ---
 
+## FIX-014 — Form 4 insider data + follow-up placeholders
+
+### Problem
+After NVDA insider research, follow-up *"can i know more details?"* returned chat placeholders (`[Insider Name]`, `[Buy/Sell]`, `[Number of Shares]`, `[Price]`) in ~1.2s with real accession metadata but no transaction rows.
+
+### Root cause
+1. `get_sec_filings(..., "4")` parsed 10-K fields only (risk factors, MD&A) — Form 4 objects expose insider/transaction APIs instead.
+2. Misrouted chat follow-ups had no EDGAR fallback; Nova Lite invented bracket placeholders from partial context.
+
+### Fix
+| Piece | Behavior |
+|-------|----------|
+| `format_form4_filing()` | Parses EdgarTools Form 4: insider, position, transaction type, shares, price |
+| `get_sec_filings` form `"4"` | Returns structured transaction rows via `get_transaction_activities()` |
+| `_infer_context_topic()` | Scans all ALEX messages + accession patterns in full context blob |
+| `_try_insider_followup_direct()` | Chat safety net — fetches Form 4 from EDGAR when vague insider follow-up misroutes |
+| `_is_stub_response()` | Detects Form 4 placeholder patterns → triggers SEC recovery |
+| Conversation prompt | Forbids bracket placeholders when Form 4 context exists |
+
+### Test queries
+| Query | Context | Expected |
+|-------|---------|----------|
+| `can i know more details?` | NVDA Form 4 ALEX reply | deep MCP or chat EDGAR fetch — real insider name + shares |
+| `insider trade details for NVDA` | — | Form 4 with Jen Hsun Huang / transaction rows |
+
+### Files edited
+| File | Change |
+|------|--------|
+| `backend/researcher/tools.py` | `format_form4_filing()`, Form 4 branch in `get_sec_filings` |
+| `backend/researcher/query_router.py` | Broader `_infer_context_topic()` |
+| `backend/researcher/server.py` | `_try_insider_followup_direct()`, stub + prompt guards |
+| `scripts/tests/test_p1_router.py` | NVDA vague follow-up case |
+
+### Verification
+- EdgarTools: NVDA Form 4 → Jen Hsun Huang, Gift 400,000 shares
+- `python3 scripts/tests/test_p1_router.py` — NVDA follow-up → deep `filing_form4`
+
+---
+
+## FIX-015 — NVDA dividend yield fallback
+
+### Problem
+Fast research showed `Dividend Yield: None` for NVDA despite Yahoo Finance returning `trailingAnnualDividendRate: 0.04`.
+
+### Root cause
+yfinance often omits `dividendYield` for growth names; code only read that field.
+
+### Fix
+| Piece | Behavior |
+|-------|----------|
+| `format_dividend_info()` | Fallback chain: `dividendYield` → `trailingAnnualDividendRate` → `dividendRate` → `lastDividendValue` |
+| Output label | `Dividend:` with computed yield when yield field missing |
+
+### Files edited
+| File | Change |
+|------|--------|
+| `backend/researcher/tools.py` | `format_dividend_info()` in `get_stock_data` output |
+
+---
+
 ## Deploy log
 
 | Date (UTC) | Image digest (short) | Notes |
@@ -566,6 +626,7 @@ Router chose Fast Research correctly, but response was a full price/news table �
 | 2026-06-15 23:46 | ECS researcher | FIX-009: `context_service` subquery search |
 | 2026-06-16 00:00 | ECS researcher | FIX-010: trading education (stop loss) |
 | 2026-06-16 00:14 | ECS researcher | FIX-012: vague insider follow-up → deep Form 4 |
+| 2026-06-19 | ECS researcher | FIX-014–015: Form 4 parsing (`4ff215d7…`) + dividend fallback |
 
 ---
 
@@ -601,3 +662,5 @@ Router chose Fast Research correctly, but response was a full price/news table �
 | 2026-06-16 | Cursor Agent | FIX-011: LLM finance gate — scalable education routing |
 | 2026-06-16 | Cursor Agent | FIX-012: vague follow-up after insider/SEC → deep Form 4 |
 | 2026-06-16 | Cursor Agent | FIX-013: CEO/leadership queries — KEY PEOPLE + question-first fast |
+| 2026-06-19 | Cursor Agent | FIX-014: Form 4 EDGAR parsing + insider follow-up placeholder fix |
+| 2026-06-19 | Cursor Agent | FIX-015: NVDA dividend yield fallback via trailingAnnualDividendRate |

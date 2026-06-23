@@ -30,6 +30,108 @@ def format_company_leadership(info: dict, max_officers: int = 5) -> str:
     return "KEY PEOPLE:\n" + "\n".join(lines)
 
 
+def format_dividend_info(info: dict, price) -> str:
+    """Format dividend from yfinance; many tickers omit dividendYield (e.g. NVDA)."""
+    raw_yield = info.get("dividendYield")
+    if isinstance(raw_yield, (int, float)) and raw_yield > 0:
+        return f"{raw_yield * 100:.2f}%"
+
+    def _price_float() -> float | None:
+        if isinstance(price, (int, float)):
+            return float(price)
+        try:
+            return float(str(price).replace("$", "").replace(",", "").strip())
+        except (TypeError, ValueError):
+            return None
+
+    annual = info.get("trailingAnnualDividendRate")
+    if isinstance(annual, (int, float)) and annual > 0:
+        p = _price_float()
+        if p and p > 0:
+            return f"{annual / p * 100:.2f}% (${annual:.2f}/share annually)"
+        return f"${annual:.2f}/share annually"
+
+    rate = info.get("dividendRate")
+    if isinstance(rate, (int, float)) and rate > 0:
+        p = _price_float()
+        if p and p > 0:
+            return f"{rate / p * 100:.2f}% (${rate:.2f}/share, trailing rate)"
+        return f"${rate:.2f}/share (trailing rate)"
+
+    last = info.get("lastDividendValue")
+    if isinstance(last, (int, float)) and last > 0:
+        return f"${last:.2f} last payment (yield unavailable)"
+
+    return "None (no regular dividend)"
+
+
+def format_form4_filing(doc, filing, ticker: str) -> str:
+    """Structured Form 4 insider transaction text from EdgarTools."""
+    parts = [
+        f"{ticker.upper()} — Form 4 Insider Filing",
+        f"Filed: {filing.filing_date}",
+        f"Period: {getattr(filing, 'period_of_report', None) or getattr(doc, 'reporting_period', '')}",
+        f"Accession: {filing.accession_no}",
+        "---",
+    ]
+
+    insider = getattr(doc, "insider_name", None) or ""
+    position = getattr(doc, "position", None) or ""
+    if insider:
+        parts.append(f"Insider: {insider}")
+    if position:
+        parts.append(f"Position: {position}")
+
+    issuer = getattr(doc, "issuer", None)
+    if issuer is not None:
+        name = getattr(issuer, "name", None) or str(issuer)
+        if name:
+            parts.append(f"Issuer: {name}")
+
+    period = getattr(doc, "reporting_period", None)
+    if period:
+        parts.append(f"Transaction Date: {period}")
+
+    parts.append("---")
+    parts.append("TRANSACTIONS:")
+
+    activities = []
+    if hasattr(doc, "get_transaction_activities"):
+        try:
+            activities = doc.get_transaction_activities() or []
+        except Exception:
+            activities = []
+
+    if activities:
+        for act in activities:
+            tx_type = getattr(act, "transaction_type", "transaction") or "transaction"
+            code = getattr(act, "code", "") or ""
+            shares = getattr(act, "shares", None)
+            price = getattr(act, "price_per_share", None)
+            value = getattr(act, "value", None)
+            title = getattr(act, "security_title", "") or ""
+            line = f"- {tx_type.title()}"
+            if code:
+                line += f" ({code})"
+            if title:
+                line += f" — {title}"
+            if shares is not None:
+                line += f" | {shares:,} shares"
+            if price is not None and price > 0:
+                line += f" @ ${price:,.2f}/share"
+            if value is not None and value > 0:
+                line += f" | value ${value:,.2f}"
+            parts.append(line)
+    else:
+        try:
+            ctx = doc.to_context() if hasattr(doc, "to_context") else str(doc)
+            parts.append(ctx[:2500] if ctx else "No transaction rows parsed.")
+        except Exception as e:
+            parts.append(f"Could not parse transactions: {e}")
+
+    return "\n".join(parts)
+
+
 @function_tool
 async def get_sec_filings(ticker: str, form_type: str = "10-K") -> str:
     """
@@ -84,6 +186,9 @@ async def get_sec_filings(ticker: str, form_type: str = "10-K") -> str:
             # Get document object for structured access
             try:
                 doc = filing.obj()
+
+                if form_type == "4":
+                    return format_form4_filing(doc, filing, ticker.upper())
 
                 # Risk Factors
                 if hasattr(doc, 'risk_factors') and doc.risk_factors:
@@ -175,7 +280,6 @@ async def get_stock_data(ticker: str) -> str:
         mkt_cap   = info.get('marketCap', 'N/A')
         pe_ratio  = info.get('trailingPE', 'N/A')
         fwd_pe    = info.get('forwardPE', 'N/A')
-        div_yield = info.get('dividendYield', 'N/A')
         week_high = info.get('fiftyTwoWeekHigh', 'N/A')
         week_low  = info.get('fiftyTwoWeekLow', 'N/A')
         revenue   = info.get('totalRevenue', 'N/A')
@@ -188,7 +292,6 @@ async def get_stock_data(ticker: str) -> str:
         # Format numbers
         if isinstance(mkt_cap,   (int, float)): mkt_cap   = f"${mkt_cap/1e9:.2f}B"
         if isinstance(revenue,   (int, float)): revenue   = f"${revenue/1e9:.2f}B"
-        if isinstance(div_yield, float):        div_yield = f"{div_yield*100:.2f}%"
         if isinstance(margins,   float):        margins   = f"{margins*100:.2f}%"
         if isinstance(pe_ratio,  float):        pe_ratio  = f"{pe_ratio:.2f}x"
         if isinstance(fwd_pe,    float):        fwd_pe    = f"{fwd_pe:.2f}x"
@@ -197,6 +300,7 @@ async def get_stock_data(ticker: str) -> str:
         if isinstance(week_high,  (int, float)): week_high = f"{week_high:.2f}"
         if isinstance(week_low,   (int, float)): week_low  = f"{week_low:.2f}"
 
+        dividend  = format_dividend_info(info, price)
         leadership = format_company_leadership(info)
 
         # If we couldn't get price show clear message
@@ -278,7 +382,7 @@ Market Cap:     {mkt_cap}
 Sector:         {sector}
 P/E Ratio:      {pe_ratio}
 Forward P/E:    {fwd_pe}
-Dividend Yield: {div_yield}
+Dividend:       {dividend}
 Profit Margins: {margins}
 52-Week High:   ${week_high}
 52-Week Low:    ${week_low}

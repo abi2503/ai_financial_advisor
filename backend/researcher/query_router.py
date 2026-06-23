@@ -277,19 +277,25 @@ def _infer_context_topic(context_hint: str) -> str:
     """What the session was last discussing — drives vague follow-up routing."""
     if not context_hint:
         return ""
-    content = ""
-    for ln in reversed(context_hint.splitlines()):
-        if ln.strip().upper().startswith("ALEX:"):
-            content = ln.split(":", 1)[-1].lower()
-            break
-    if re.search(r"\b(insider|form\s*4|form 4)\b", content):
+    blob = context_hint.lower()
+    alex_contents = [
+        ln.split(":", 1)[-1].lower()
+        for ln in context_hint.splitlines()
+        if ln.strip().upper().startswith("ALEX:")
+    ]
+    for content in reversed(alex_contents):
+        if re.search(r"\b(insider|form\s*4|form 4|accession)\b", content):
+            return "insider"
+        if re.search(r"\b(10[\s-]?k|8[\s-]?k|10[\s-]?q|sec filing|edgar)\b", content):
+            return "sec"
+        if re.search(r"\b(sentiment|options flow|analyst)\b", content):
+            return "sentiment"
+        if re.search(r"\b(price|trading at|pe ratio|market cap)\b", content):
+            return "market"
+    if re.search(r"\b(form\s*4|insider trading|accession\s*(number)?:)\b", blob):
         return "insider"
-    if re.search(r"\b(10[\s-]?k|8[\s-]?k|10[\s-]?q|sec filing|edgar)\b", content):
+    if re.search(r"\b(10[\s-]?k|8[\s-]?k|10[\s-]?q|sec filing|edgar)\b", blob):
         return "sec"
-    if re.search(r"\b(sentiment|options flow|analyst)\b", content):
-        return "sentiment"
-    if re.search(r"\b(price|trading at|pe ratio|market cap)\b", content):
-        return "market"
     return "general"
 
 

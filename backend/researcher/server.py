@@ -3,6 +3,7 @@ Alex Researcher Service — Autonomous Investment Research Agent
 Guide 8: Added CloudWatch metrics for observability
 """
 import os
+import re
 import time
 import json
 import logging
@@ -314,6 +315,11 @@ def _is_stub_response(text: str, mode: str = "deep", scope=None) -> bool:
     if mode == "deep" and scope and scope.sec_forms:
         primary = scope.sec_forms[0].lower()
         has_sec = primary in lower or "risk factor" in lower or "filing date" in lower
+        if scope.scope == "filing_form4":
+            has_insider = "insider:" in lower or "shares" in lower or "transaction" in lower
+            has_placeholders = bool(re.search(r"\[(insider|buy/sell|number of shares|price)\]", lower))
+            if has_placeholders or (not has_insider and len(text) < 1200):
+                return True
         if not has_sec and "recommendation" in lower and len(text) < 700:
             return True
     return False
@@ -439,6 +445,28 @@ def _conversation_canned_reply(query: str, intent: str) -> Optional[str]:
     return None
 
 
+async def _try_insider_followup_direct(topic: str, user_id: str, session_id: str) -> Optional[str]:
+    """If user asks for more Form 4 details, fetch EDGAR directly — skip chat placeholders."""
+    from query_router import (
+        _is_contextual_followup, _infer_context_topic,
+        resolve_entities, enrich_follow_up_query,
+    )
+    try:
+        from context_service import get_conversation_context
+        context = get_conversation_context(user_id, session_id, limit=4)
+    except Exception:
+        context = ""
+    if not context or not _is_contextual_followup(topic):
+        return None
+    if _infer_context_topic(context) != "insider":
+        return None
+    entities = resolve_entities(topic, context)
+    if not entities:
+        return None
+    _, scope = enrich_follow_up_query(topic, context)
+    return await _recover_deep_sec_response(topic, entities[0], scope)
+
+
 def _build_conversation_prompt(query: str, user_id: str, session_id: str, intent: str) -> tuple[str, int]:
     """Lightweight prompt for chat — skip DB context on education for speed."""
     conv = ""
@@ -469,7 +497,9 @@ User: {query}
 Instructions:
 - ONLY financial/investing topics. Politely decline anything else.
 - Answer in clear markdown. For education: 2-3 short paragraphs max, use bullets if helpful.
-{sec_note}- No buy/sell recommendations. Be accurate and concise."""
+{sec_note}- No buy/sell recommendations. Be accurate and concise.
+- NEVER use bracket placeholders like [Insider Name], [Buy/Sell], [Number of Shares], or [Price].
+- If conversation history mentions a Form 4 or accession number but you lack transaction rows, say you need a deep EDGAR fetch — do not invent fields."""
     return prompt, max_tokens
 
 
@@ -776,6 +806,19 @@ async def research_conversation_stream(request: ResearchRequest):
     async def generate():
         try:
             yield f"data: {json.dumps({'type': 'reasoning', 'content': '💬 Composing reply...'})}\n\n"
+
+            insider_reply = await _try_insider_followup_direct(topic, user_id, session_id)
+            if insider_reply:
+                yield f"data: {json.dumps({'type': 'reasoning', 'content': '📄 Fetching Form 4 details from SEC EDGAR...'})}\n\n"
+                yield f"data: {json.dumps({'type': 'reasoning_done'})}\n\n"
+                tracker.mark_first_token_ms(int((time.monotonic() - tracker.t0) * 1000))
+                async for event in stream_response_tokens(insider_reply, chunk_size=12, delay_s=0):
+                    yield event
+                save_session(user_id, session_id, topic, insider_reply)
+                tracker.set_response(insider_reply)
+                tracker.success = True
+                yield f"data: {json.dumps({'type': 'done', 'route': 'chat', 'latency': round(time.monotonic() - tracker.t0, 1)})}\n\n"
+                return
 
             canned = _conversation_canned_reply(topic, intent)
             if intent in ("off_topic", "policy_flag"):

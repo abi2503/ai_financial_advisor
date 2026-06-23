@@ -58,7 +58,7 @@
 | Layer | Capability | Status |
 |-------|------------|--------|
 | **Brain** | Unified chat with auto-routing (Chat / Fast / Deep / Debater / Parallel) | ✅ Code live |
-| **Router intelligence** | Hybrid regex + LLM finance gate; scoped deep research; session follow-ups | ✅ FIX-001–012 |
+| **Router intelligence** | Hybrid regex + LLM finance gate; scoped deep research; session follow-ups | ✅ FIX-001–015 |
 | **Research** | Fast (yfinance), Deep (SEC + Playwright MCP), Multi-agent comparison | ✅ Code live |
 | **Memory** | Per-user pgvector RAG, chunked ingest, semantic search, chat sessions | ✅ FIX-009 |
 | **Autonomous** | 2-hour portfolio research → digest cards on dashboard | ✅ Pipeline live |
@@ -66,9 +66,9 @@
 | **Observability** | `/observe` tokens + cost per query, latency/tool/MCP pass-fail | ✅ FIX-007 |
 | **Ops** | Dashboard cost widget + live **Refresh now** → `alex-ops-agent` | ✅ FIX-008 |
 | **Safety** | Router guardrails, Bedrock guardrail, policy flags, off-topic blocks | ✅ Code live |
-| **Audit trail** | `Alex_Fixes.md` FIX-001–012 + §33 CL-019–026 | ✅ Maintained |
+| **Audit trail** | `Alex_Fixes.md` FIX-001–015 + §33 CL-019–030 | ✅ Maintained |
 
-> **Operational note (June 16, 2026):** ECS researcher deployed with FIX-012 (`sha256:55ae23f5…`). SageMaker + Aurora + Lambdas persist across sessions. See [§34.12](#3412-operational-state--session-lifecycle).
+> **Operational note (June 19, 2026):** ECS researcher deployed with FIX-014–015 (`sha256:4ff215d7…`). Form 4 insider parsing + dividend fallback live. ALB: `http://alex-alb-1343843426.us-east-1.elb.amazonaws.com`. See [§34.12](#3412-operational-state--session-lifecycle).
 
 ### One-line pitch
 
@@ -79,7 +79,7 @@
 | Metric | Value |
 |--------|-------|
 | P0 foundation tests | **51 passed** (`scripts/test_p0.sh`) |
-| P1 query router tests | **62 passed** (`scripts/tests/test_p1_router.py`) |
+| P1 query router tests | **71 passed** (`scripts/tests/test_p1_router.py`) |
 | pgvector RAG verification | `scripts/test_pgvector_rag.py` + `scripts/rag_maintenance.py` |
 | Aurora schema tables | **24+** verified via `aurora_warmup.py` |
 | Terraform modules | **9** (`0_vpc` … `9_trading_floor`) |
@@ -88,11 +88,11 @@
 | Lambda agents | **8** functions |
 | SageMaker embedding | `alex-embedding` — **InService** when session running |
 | research_vectors rows | **~921** after FIX-009 cleanup (session-dependent) |
-| Current ALB (session) | `http://alex-alb-1816782403.us-east-1.elb.amazonaws.com` |
+| Current ALB (session) | `http://alex-alb-1343843426.us-east-1.elb.amazonaws.com` |
 | Frontend (Vercel) | `https://ai-financial-advisor-t6kt-abi2503s-projects.vercel.app` — HTTP 200 |
-| Documentation change log | **CL-001 → CL-026** (see §33) |
-| Platform fix audit log | **FIX-001 → FIX-012** (`Alex_Fixes.md`) |
-| GitHub | `main` @ `cc8618c` — FIX-007–012 batch pushed June 16, 2026 |
+| Documentation change log | **CL-001 → CL-030** (see §33) |
+| Platform fix audit log | **FIX-001 → FIX-015** (`Alex_Fixes.md`) |
+| GitHub | `main` — FIX-014–015 batch June 19, 2026 |
 
 > **Full inventory:** See [§34](#34-current-application-state--authoritative-snapshot-june-16-2026) and [§35](#35-latest-functionalities-shipped--june-2026-batch) for complete shipped vs planned breakdown.
 
@@ -712,7 +712,7 @@ Each section: **what**, **concept**, **implementation**, **rationale**, **USP**.
 |-----------|---------|
 | `_has_pronoun_reference()` | `its`, `the stock`, `that company` → resolve ticker from context |
 | `_is_vague_continuation()` | `any other details`, `what else`, `tell me more` → keep session topic |
-| `_infer_context_topic()` | Last ALEX message topic: insider, sec, sentiment, market |
+| `_infer_context_topic()` | Scans all ALEX messages + accession patterns — insider, sec, sentiment, market |
 | `enrich_follow_up_query()` | Expand vague query + force `filing_form4` for insider follow-ups |
 | `ACTIVE TICKER` directive | Injected into fast/deep agent — prevents portfolio hijack (e.g. ASML vs NVDA) |
 | `COMPANY_ALIASES` | `micron` → `MU`, etc. |
@@ -725,7 +725,7 @@ Each section: **what**, **concept**, **implementation**, **rationale**, **USP**.
 - `MCP_SIGNALS`, `PARALLEL_SIGNALS`, `SEC_FILING_PATTERN`
 - Session context **only** for follow-ups — prevents stale hijacking ("Hey Alex?" → chat)
 
-**Files:** `backend/researcher/query_router.py`, `backend/researcher/server.py`, `scripts/tests/test_p1_router.py` (**62 tests**), `Alex_Fixes.md` (FIX-001–012)
+**Files:** `backend/researcher/query_router.py`, `backend/researcher/server.py`, `backend/researcher/tools.py`, `scripts/tests/test_p1_router.py` (**71 tests**), `Alex_Fixes.md` (FIX-001–015)
 
 **Rationale:** Regex-first avoids LLM latency on obvious cases; LLM gate scales education without per-concept patterns; scoped deep avoids over-fetching analyst/options on a 10-K-only question.
 
@@ -1370,7 +1370,7 @@ sequenceDiagram
 | `/suggestions` | GET | Proactive suggestions |
 | `/test-network` | GET | Network connectivity test |
 
-**ALB:** `http://alex-alb-1816782403.us-east-1.elb.amazonaws.com` (current session; SSM `/alex/ecs_url` — URL changes when ECS Terraform recreates ALB)
+**ALB:** `http://alex-alb-1343843426.us-east-1.elb.amazonaws.com` (current session; SSM `/alex/ecs_url` — URL changes when ECS Terraform recreates ALB)
 
 ### 18.3 API Gateway (Ingest Lambda)
 
@@ -1812,7 +1812,7 @@ cd backend/researcher && bash deploy.sh         # Deploy ECS
 
 | Deliverable | Status |
 |-------------|--------|
-| Query router | ✅ **62 tests** — hybrid regex + LLM gate |
+| Query router | ✅ **71 tests** — hybrid regex + LLM gate |
 | Scoped deep research | ✅ 10-K / 8-K / 10-Q / Form 4 / analyst / options scopes |
 | Session follow-ups | ✅ Pronouns, vague continuation, insider topic routing |
 | SEC education vs live SEC | ✅ `sec_education` intent separates concepts from EDGAR fetch |
@@ -1824,8 +1824,8 @@ cd backend/researcher && bash deploy.sh         # Deploy ECS
 | pgvector RAG reliability | ✅ Chunking, subquery search, maintenance scripts |
 | Observe tokens + cost | ✅ Per-query FinOps |
 | Dashboard ops refresh | ✅ Live Lambda invoke |
-| ECS deployed | ✅ FIX-012 image June 16, 2026 |
-| Fix audit trail | ✅ `Alex_Fixes.md` FIX-001–012 |
+| ECS deployed | ✅ FIX-014–015 image June 19, 2026 (`sha256:4ff215d7…`) |
+| Fix audit trail | ✅ `Alex_Fixes.md` FIX-001–015 |
 
 ### 26.3 Full phase roadmap (`Alex_Master_Implementation_Plan.md`)
 
@@ -2500,6 +2500,36 @@ Documentation (strategic):
 | **Tech** | `companyOfficers` → KEY PEOPLE; `leadership` intent; question-first fast prompt |
 | **Verification** | 65/65 router tests |
 
+#### CL-029 — Form 4 insider data + follow-up placeholders (FIX-014)
+
+| Field | Value |
+|-------|-------|
+| **Date** | 2026-06-19 |
+| **Status** | ✅ Shipped + deployed |
+| **Summary** | *"can i know more details?"* after NVDA Form 4 returns real EDGAR transaction rows — not `[Insider Name]` placeholders |
+| **Rationale** | User screenshot: chat follow-up had accession metadata but invented bracket fields; `get_sec_filings("4")` parsed 10-K sections only |
+| **Fix ID** | FIX-014 — see `Alex_Fixes.md` |
+| **Files** | `tools.py`, `query_router.py`, `server.py`, `test_p1_router.py` |
+| **Tech** | `format_form4_filing()`, `_try_insider_followup_direct()`, broader `_infer_context_topic()`, stub/placeholder guards |
+| **Verification** | NVDA Form 4 → Jen Hsun Huang, Gift 400,000 shares; router NVDA vague follow-up → `filing_form4` |
+| **Companion docs** | `Alex_Fixes.md` FIX-014 |
+| **Deploy** | ECS `sha256:4ff215d7…` June 19, 2026 |
+
+#### CL-030 — NVDA dividend yield fallback (FIX-015)
+
+| Field | Value |
+|-------|-------|
+| **Date** | 2026-06-19 |
+| **Status** | ✅ Shipped + deployed |
+| **Summary** | Fast research shows computed dividend for NVDA when `dividendYield` is null but `trailingAnnualDividendRate` exists |
+| **Rationale** | yfinance omits yield field for many growth names |
+| **Fix ID** | FIX-015 — see `Alex_Fixes.md` |
+| **Files** | `backend/researcher/tools.py` |
+| **Tech** | `format_dividend_info()` fallback chain |
+| **Verification** | NVDA → ~0.02% from $0.04/share annual rate |
+| **Companion docs** | `Alex_Fixes.md` FIX-015 |
+| **Deploy** | ECS `sha256:4ff215d7…` June 19, 2026 |
+
 ---
 
 ## 34. Current Application State — Authoritative Snapshot (June 16, 2026)
@@ -2516,7 +2546,7 @@ Documentation (strategic):
 - **Autonomous layer:** 2-hour portfolio research → dashboard digest cards
 - **Trading layer:** 6-agent debate committee → advisory paper trades (positions not auto-updated)
 - **Ops layer:** `/observe` tokens + cost per query; dashboard **Refresh now** invokes ops agent
-- **Audit:** `Alex_Fixes.md` FIX-001–012 with matching §33 CL entries
+- **Audit:** `Alex_Fixes.md` FIX-001–015 with matching §33 CL entries
 
 **Regulatory posture:** Research + education + paper simulation — not personalized investment advice or real execution.
 
@@ -2528,10 +2558,10 @@ Documentation (strategic):
 |------------|---------------------|---------------------------|
 | Query router (5 routes + intents) | ✅ Hybrid regex + LLM gate; `sec_education`; follow-ups | Edu fast search route (`Alex_chat_intelligence.md` C1) |
 | Scoped deep research | ✅ 10-K / 8-K / 10-Q / Form 4 / analyst / options / sec_full | Broader MCP forms (P7) |
-| Session follow-ups | ✅ Pronouns, vague continuation, insider→Form 4 (FIX-012) | Follow-up after `sec_education` chat only |
+| Session follow-ups | ✅ Pronouns, vague continuation, insider→Form 4 + EDGAR safety net (FIX-012/014) | Follow-up after `sec_education` chat only |
 | Unified chat SSE | ✅ `/api/alex/chat` | Suggestion chips, PDF artifact events |
-| Fast research | ✅ yfinance + tools + ACTIVE TICKER directive | Agentic RAG context (P24) |
-| Deep SEC + MCP | ✅ Playwright + EdgarTools + stub recovery | SEC/News/Earnings MCP expansion (P7) |
+| Fast research | ✅ yfinance + tools + ACTIVE TICKER + dividend fallback (FIX-015) | Agentic RAG context (P24) |
+| Deep SEC + MCP | ✅ Playwright + EdgarTools Form 4 parsing + stub recovery | SEC/News/Earnings MCP expansion (P7) |
 | Deep parallel compare | ✅ Planner → SQS → reporter | P15 async sub-agents on ECS |
 | Debater handoffs (5) | ✅ `debater_registry.py` | Committee mini-debate (C6.2) |
 | Conversation / education | ✅ Nova Lite + LLM finance gate (vega, stop loss, etc.) | Vector-first edu + ingest (C1) |
@@ -2762,7 +2792,7 @@ EventBridge (2h) → alex-scheduler
 | Document | Role |
 |----------|------|
 | `Alex_report.md` | **This file** — complete platform report + §33 change log + §35 latest features |
-| `Alex_Fixes.md` | **FIX-001–012** audit trail — routing, RAG, ops, observability fixes |
+| `Alex_Fixes.md` | **FIX-001–015** audit trail — routing, RAG, ops, observability, Form 4, dividend fixes |
 | `Alex_Master_Implementation_Plan.md` | Unified P0–P24 phase order, LangChain, Agentic RAG |
 | `Alex_AI_2.0.md` | Conversational AI vision, RAG, synthesizer |
 | `Alex_chat_intelligence.md` | Chat routing upgrades (edu, PDF, earnings, debaters) |
@@ -2798,7 +2828,7 @@ bash scripts/stop_session.sh    # Tear down paid compute; keep Aurora/Lambdas
 
 **When ECS healthy:** `curl http://<ALB>/health` → `{"status":"healthy"}`.
 
-**Current ALB:** `http://alex-alb-1816782403.us-east-1.elb.amazonaws.com` (SSM `/alex/ecs_url`).
+**Current ALB:** `http://alex-alb-1343843426.us-east-1.elb.amazonaws.com` (SSM `/alex/ecs_url`).
 
 ---
 
@@ -2903,18 +2933,19 @@ Per user-approved step-by-step sequence:
 
 | Item | Detail |
 |------|--------|
-| ECS researcher deploy | `backend/researcher/deploy.sh` — FIX-012 image `sha256:55ae23f5…` |
+| ECS researcher deploy | `backend/researcher/deploy.sh` — FIX-014–015 image `sha256:4ff215d7…` |
 | Ingest Lambda deploy | `scripts/deploy_ingest.sh` — subquery search + chunking |
 | Aurora warmup | `input_tokens`, `output_tokens`, `cost_usd` columns added |
-| GitHub | `main` @ `cc8618c` — full FIX-007–012 batch |
-| ALB | `http://alex-alb-1816782403.us-east-1.elb.amazonaws.com` |
+| Session pause/resume | `scripts/stop_session.sh` / `start_session.sh` — middle-lean (scale ECS 0/1) |
+| GitHub | `main` — FIX-014–015 batch June 19, 2026 |
+| ALB | `http://alex-alb-1343843426.us-east-1.elb.amazonaws.com` |
 | SSM | `/alex/ecs_url` updated on each ECS deploy |
 
 ### 35.6 Verification matrix
 
 | Test / script | Count / result | Covers |
 |---------------|----------------|--------|
-| `test_p1_router.py` | **62/62 pass** | All routing, education, follow-ups, scopes |
+| `test_p1_router.py` | **71/71 pass** | All routing, education, follow-ups, Form 4, scopes |
 | `test_p0.sh` | **51/51 pass** | Foundation, schema, identity |
 | `rag_maintenance.py --verify` | Micron score 0.67+ | Semantic search quality |
 | `test_pgvector_rag.py` | E2E smoke | API Gateway `/search` |
@@ -2936,6 +2967,9 @@ Per user-approved step-by-step sequence:
 | FIX-010 | "explain stop loss?" → education not off-topic |
 | FIX-011 | LLM finance gate (no regex sprawl) |
 | FIX-012 | Vague follow-up after insider → deep Form 4 |
+| FIX-013 | CEO/leadership queries — KEY PEOPLE block |
+| FIX-014 | Form 4 EDGAR parsing + insider follow-up placeholder fix |
+| FIX-015 | Dividend yield fallback (trailingAnnualDividendRate) |
 
 ---
 
